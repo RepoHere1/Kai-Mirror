@@ -1,12 +1,12 @@
-﻿'use strict';
+'use strict';
 // ===========================================================================
-// ATTENTION — ANY AI / AGENT EDITING THIS FILE. Read before touching anything.
+// ATTENTION - ANY AI / AGENT EDITING THIS FILE. Read before touching anything.
 //   The operator's lane BUTTON PUSH is IMMEDIATE, ABSOLUTE LAW. No code you add,
 //   refactor, optimise, or "fix" may override, delay, auto-reverse, auto-restart,
 //   keep-alive, supervise, or otherwise contravene an operator toggle of a lane's
 //   running state. `ls.running` is written by the operator toggle endpoint and the
 //   operator on/off scripts ONLY. If a change could make any lane disobey the
-//   operator's last button push, DO NOT SHIP IT — revert and ask.
+//   operator's last button push, DO NOT SHIP IT - revert and ask.
 // ===========================================================================
 // Kai-Mirror (DRY) server.
 //
@@ -539,23 +539,23 @@ const LANES = [
 const LANE_BY_NAME = new Map(LANES.map(l => [l.name, l]));
 
 // ===========================================================================
-// OPERATOR LAW — HARD-CODED, NON-NEGOTIABLE (by direct operator command).
+// OPERATOR LAW - HARD-CODED, NON-NEGOTIABLE (by direct operator command).
 //   1. The operator's button push is IMMEDIATE, ABSOLUTE LAW. A lane is turned
-//      ON or OFF the instant the toggle endpoint is hit. Nothing — no timer,
+//      ON or OFF the instant the toggle endpoint is hit. Nothing - no timer,
 //      no engine tick, no boot routine, no "supervisor", no auto-start, no
-//      auto-restart, no health-check, no watchdog — may ever flip a lane's
+//      auto-restart, no health-check, no watchdog - may ever flip a lane's
 //      `running` flag against the operator's last explicit command.
 //   2. There is NO supervisor process in this codebase and there will never be.
 //      Any future code that starts, restarts, resurrects, keeps-alive, or
 //      auto-reenables a lane WITHOUT a direct operator toggle is FORBIDDEN and
 //      must be removed. The ONLY writer of `ls.running` is the operator toggle
 //      endpoint below (and the operator `on`/`off` control scripts).
-//   3. A lane stays EXACTLY the way the operator last set it — forever — until
+//   3. A lane stays EXACTLY the way the operator last set it - forever - until
 //      the operator changes it again.
 //   Violating any of these three is a bug, full stop.
 // ===========================================================================
 
-// OPERATOR_LAW: Enforced at runtime — any violation throws immediately.
+// OPERATOR_LAW: Enforced at runtime - any violation throws immediately.
 const OPERATOR_LAW = Object.freeze({
   version: '2026-10-27',
   decree: 'Operator button push is immediate absolute law. No supervisor, auto-start, auto-restart, watchdog, or keep-alive may ever contravene.',
@@ -570,30 +570,30 @@ const OPERATOR_LAW = Object.freeze({
     }
   },
   assertNoSupervisor: function() {
-    // Runtime guard — if any code tries to spawn a supervisor, it dies here.
+    // Runtime guard - if any code tries to spawn a supervisor, it dies here.
     if (global.__KAI_SUPERVISOR_SPAWNED) {
-      throw new Error('OPERATOR_LAW: Supervisor spawn detected — exterminated.');
+      throw new Error('OPERATOR_LAW: Supervisor spawn detected - exterminated.');
     }
   }
 });
 
-// Seal the law — cannot be modified, deleted, or overridden.
+// Seal the law - cannot be modified, deleted, or overridden.
 Object.seal(OPERATOR_LAW);
 global.OPERATOR_LAW = OPERATOR_LAW;
 
 // ===========================================================================
-// COMMAND ORDER — IMPERIAL LAW. Hard-coded by DIRECT OPERATOR COMMAND (2026-10-27).
-//   1. The operator's lane BUTTON PUSH is IMPERIAL LAW — immediate, absolute,
+// COMMAND ORDER - IMPERIAL LAW. Hard-coded by DIRECT OPERATOR COMMAND (2026-10-27).
+//   1. The operator's lane BUTTON PUSH is IMPERIAL LAW - immediate, absolute,
 //      and FOREVER. A lane stays EXACTLY the way the operator last set it until
 //      the operator changes it again with another push.
-//   2. NEVER — in this file or any future edit — create, keep, or revive any
+//   2. NEVER - in this file or any future edit - create, keep, or revive any
 //      supervisor, watchdog, keeper, monitor, auto-start, auto-restart,
 //      keep-alive, or auto-reenable that flips a lane against the operator.
 //      Any such code is FORBIDDEN and must be EXTERMINATED the instant it runs.
 //   3. The routine below is that enforcement. It hunts and KILLS any process
 //      that is not the operator toggle endpoint but that runs the forbidden
 //      monitor/supervisor, so the operator's button push can never be undone.
-//      It ONLY kills hostile OS processes — it NEVER writes ls.running.
+//      It ONLY kills hostile OS processes - it NEVER writes ls.running.
 // ===========================================================================
 function exterminateSupervisors() {
   const script =
@@ -621,7 +621,7 @@ function defaultState() {
     no_lanes_enabled: true,
     all_no: {
       dry: { starting_balance: allNoStart, balance: allNoStart, positions: [], closed_trades: [], total_pnl: 0, entries: 0 },
-      dry: { starting_balance: allNoStart, balance: allNoStart, positions: [], closed_trades: [], total_pnl: 0, entries: 0 },
+      live: { starting_balance: allNoStart, balance: allNoStart, positions: [], closed_trades: [], total_pnl: 0, entries: 0 },
     },
     runtime: { 
     clip: 15,
@@ -657,7 +657,7 @@ function defaultState() {
       max_price: 0.95, min_price: 0.02, kelly_cap: 0.5,
       preferred_signals: ['order_flow', 'vol_rp', 'black_scholes', 'imbalance'],
       regime_avoid: ['wide_spread', 'arbitrage'],
-      description: 'BTC 15-min Up/Down — highest volume, tightest spreads. Fast mean-reversion.',
+      description: 'BTC 15-min Up/Down - highest volume, tightest spreads. Fast mean-reversion.',
     },
     eth_updown: {
       asset: 'ETH', series: 'KXETH15M', horizon: '15m',
@@ -665,7 +665,7 @@ function defaultState() {
       max_price: 0.95, min_price: 0.02, kelly_cap: 0.5,
       preferred_signals: ['order_flow', 'funding_carry', 'black_scholes', 'imbalance'],
       regime_avoid: ['wide_spread', 'arbitrage'],
-      description: 'ETH 15-min Up/Down — strong volume, funding carry matters.',
+      description: 'ETH 15-min Up/Down - strong volume, funding carry matters.',
     },
     xrp_updown: {
       asset: 'XRP', series: 'KXXRP15M', horizon: '15m',
@@ -673,7 +673,7 @@ function defaultState() {
       max_price: 0.95, min_price: 0.02, kelly_cap: 0.45,
       preferred_signals: ['vol_rp', 'term_struct', 'black_scholes', 'imbalance'],
       regime_avoid: ['wide_spread', 'arbitrage'],
-      description: 'XRP 15-min Up/Down — lower liquidity, wider spreads.',
+      description: 'XRP 15-min Up/Down - lower liquidity, wider spreads.',
     },
     btc_1h_updown: {
       asset: 'BTC', series: 'KXBTCD', horizon: '1d',
@@ -681,7 +681,7 @@ function defaultState() {
       max_price: 0.95, min_price: 0.02, kelly_cap: 0.5,
       preferred_signals: ['settlement_alpha', 'term_struct', 'black_scholes', 'cross_expiry'],
       regime_avoid: ['arbitrage'],
-      description: 'BTC Daily Ladder — long horizon to settlement. Settlement alpha (CF BRTI vs spot) dominates final hour.',
+      description: 'BTC Daily Ladder - long horizon to settlement. Settlement alpha (CF BRTI vs spot) dominates final hour.',
     },
     eth_1h_updown: {
       asset: 'ETH', series: 'KXETHD', horizon: '1d',
@@ -689,7 +689,7 @@ function defaultState() {
       max_price: 0.95, min_price: 0.02, kelly_cap: 0.5,
       preferred_signals: ['settlement_alpha', 'funding_carry', 'term_struct', 'black_scholes'],
       regime_avoid: ['arbitrage'],
-      description: 'ETH Daily Ladder — settlement alpha + funding carry (ETH basis).',
+      description: 'ETH Daily Ladder - settlement alpha + funding carry (ETH basis).',
     },
     xrp_1h_updown: {
       asset: 'XRP', series: 'KXXRPD', horizon: '1d',
@@ -697,7 +697,7 @@ function defaultState() {
       max_price: 0.95, min_price: 0.02, kelly_cap: 0.45,
       preferred_signals: ['settlement_alpha', 'term_struct', 'black_scholes', 'cross_expiry'],
       regime_avoid: ['arbitrage'],
-      description: 'XRP Daily Ladder — settlement alpha across expiries.',
+      description: 'XRP Daily Ladder - settlement alpha across expiries.',
     },
     hyperliquid_updown: {
       asset: 'HYPE', series: 'KXHYPE15M', horizon: '15m',
@@ -705,7 +705,7 @@ function defaultState() {
       max_price: 0.95, min_price: 0.02, kelly_cap: 0.5,
       preferred_signals: ['order_flow', 'vol_rp', 'black_scholes', 'imbalance'],
       regime_avoid: ['wide_spread', 'arbitrage'],
-      description: 'HYPE 15-min Up/Down — newer asset, volatility-driven.',
+      description: 'HYPE 15-min Up/Down - newer asset, volatility-driven.',
     },
     hyperliquid_1h_updown: {
       asset: 'HYPE', series: 'KXHYPE', horizon: '1h',
@@ -713,7 +713,7 @@ function defaultState() {
       max_price: 0.95, min_price: 0.02, kelly_cap: 0.5,
       preferred_signals: ['order_flow', 'vol_rp', 'term_struct', 'black_scholes'],
       regime_avoid: ['arbitrage'],
-      description: 'HYPE 1-Hour Up/Down — hourly contracts.',
+      description: 'HYPE 1-Hour Up/Down - hourly contracts.',
     },
     all_no_markets: {
       asset: 'ALL',
@@ -727,7 +727,7 @@ function defaultState() {
       kelly_cap: 0.6,
       preferred_signals: ['black_scholes', 'vol_rp', 'term_struct'],
       regime_avoid: ['wide_spread'],
-      description: 'ALL NO MARKETS — scans ALL Kalshi series for NO-side edge. High min_edge (0.8%), real quotes only. Vol-adjusted stops, 2.5:1 R:R. Maker at bid only.',
+      description: 'ALL NO MARKETS - scans ALL Kalshi series for NO-side edge. High min_edge (0.8%), real quotes only. Vol-adjusted stops, 2.5:1 R:R. Maker at bid only.',
     },
   },
   signal_weights: brain.signalStats(),
@@ -948,23 +948,12 @@ function quoteSane(q) {
 }
 
 function syntheticQuote(q, fair) {
-  // Create synthetic bid/ask around fair value when market quotes are missing
+  // DEPRECATED: synthetic prices are never tradeable. Kept only so old callers
+  // don't crash; it now just passes through when real quotes exist.
   if (q.yes_ask != null && q.no_ask != null && q.yes_bid != null && q.no_bid != null) {
-    return q; // Already has real quotes
+    return q;
   }
-  const spread = 0.02; // 2% synthetic spread
-  return {
-    ...q,
-    yes_bid: Math.max(0.02, fair - spread/2),
-    yes_ask: Math.min(0.98, fair + spread/2),
-    no_bid: Math.max(0.02, (1 - fair) - spread/2),
-    no_ask: Math.min(0.98, (1 - fair) + spread/2),
-    yes_bid_size: q.yes_bid_size || 100,
-    no_bid_size: q.no_bid_size || 100,
-    yes_ask_size: q.yes_ask_size || 100,
-    no_ask_size: q.no_ask_size || 100,
-    synthetic: true
-  };
+  return { ...q, synthetic: true, no_bid: null, no_ask: null, yes_bid: null, yes_ask: null };
 }
 
 async function activeQuote(lane) {
@@ -1013,10 +1002,9 @@ async function activeQuote(lane) {
       pick = fairMarkets.slice().sort((a, b) => new Date(a.close_time) - new Date(b.close_time))[0];
     }
     
-    // Create synthetic quote if needed
-    const synth = syntheticQuote(pick, pick.fair);
+    // REAL quotes only - a model-derived synthetic price is never tradeable.
     return { 
-      quote: synth, 
+      quote: pick, 
       series, 
       source: res.source, 
       host: res.host, 
@@ -1049,6 +1037,25 @@ function effectiveClip() {
   const target = Math.round(cs.base * Math.max(1, equity / baseline));
   return Math.max(cs.base, Math.min(cs.max, target));
 }
+
+// AUTOMATIC CLIP INCREASER / DECREASER (operator-ordered).
+//   UP:   every 3 consecutive wins the base clip grows +1 (hard cap cs.max).
+//   DOWN: a big loss ratchets the clip to base for 30 min (in close paths).
+//   SCALE: effectiveClip() also scales with equity growth (base * equity/baseline).
+// Call noteClipOutcome(pnl) on EVERY booked trade.
+function noteClipOutcome(pnl) {
+  const cs = state.clip_state || (state.clip_state = { base: 3, max: 25, ratchet_until: 0 });
+  if (pnl > 0) {
+    cs.win_streak = (cs.win_streak || 0) + 1;
+    if (cs.win_streak % 3 === 0 && cs.base < cs.max) {
+      cs.base = Math.min(cs.max, cs.base + 1);
+      log('clip_up', { base: cs.base, win_streak: cs.win_streak });
+    }
+  } else if (pnl < 0) {
+    cs.win_streak = 0;
+  }
+}
+
 
 // DRY book (the ONLY simulated execution) - real quotes, real settlements
 // ---------------------------------------------------------------------------
@@ -1133,7 +1140,8 @@ function openDryPosition(lane, q, side, price, fair, edge, sigma) {
   const cost = Number((qty * price).toFixed(4));
   if (dryCash() < cost) { const ls = laneState(lane.name); ls.skips++; ls.last_skip = 'insufficient dry cash'; return null; }
   const stop = Number((price * (1 - state.runtime.stop_loss)).toFixed(3));
-  const tp = Number(Math.min(0.99, price + (price * 2 * state.runtime.stop_loss)).toFixed(3));
+  // Winners ride: take profit only near-certainty (0.95), else settle at $1.
+  const tp = Number(Math.min(0.98, 0.95).toFixed(3));
   // Capture bid/ask at entry for fill quality tracking
   const bid_at_entry = side === 'YES' ? q.yes_bid : q.no_bid;
   const ask_at_entry = side === 'YES' ? q.yes_ask : q.no_ask;
@@ -1144,10 +1152,11 @@ function openDryPosition(lane, q, side, price, fair, edge, sigma) {
     series: q.series,
     strategy: lane.name,
     side,
+    spot: lane.spot || null,
     entry_price: price,
     qty, cost,
-    fair_at_entry: Number(fair.toFixed(4)),
-    edge_at_entry: Number(edge.toFixed(4)),
+    fair_at_entry: Number((fair ?? price).toFixed(4)),
+    edge_at_entry: Number((edge ?? 0).toFixed(4)),
     sigma_per_sec: sigma,
     strike: q.strike,
     horizon: lane.horizon,
@@ -1182,7 +1191,7 @@ function closeDryPosition(pos, exitPrice, reason, result) {
   const proceeds = Number((pos.qty * exitPrice).toFixed(4));
   const pnl = Number((proceeds - pos.cost).toFixed(4));
   
-  // Fill quality: (fill - bid) / (ask - bid) — should be ≤ 0 for maker
+  // Fill quality: (fill - bid) / (ask - bid) - should be <= 0 for maker
   let fillQuality = null;
   if (pos.bid_at_entry != null && pos.ask_at_entry != null && pos.ask_at_entry !== pos.bid_at_entry) {
     fillQuality = (pos.entry_price - pos.bid_at_entry) / (pos.ask_at_entry - pos.bid_at_entry);
@@ -1193,6 +1202,10 @@ function closeDryPosition(pos, exitPrice, reason, result) {
     entry_price: pos.entry_price, exit_price: exitPrice, quantity: pos.qty, cost_basis: pos.cost,
     proceeds, pnl, exit_reason: reason, result: result || '', hold_seconds: Math.round((Date.now() - new Date(pos.opened).getTime()) / 1000),
     exit_timestamp: new Date().toISOString(), opened: pos.opened,
+    // Real model values at entry (persisted for edge analytics)
+    fair_at_entry: pos.fair_at_entry != null ? pos.fair_at_entry : null,
+    edge_at_entry: pos.edge_at_entry != null ? pos.edge_at_entry : null,
+    kelly_fraction: pos.kelly_fraction != null ? pos.kelly_fraction : null,
     // Fill quality tracking
     bid_at_entry: pos.bid_at_entry,
     ask_at_entry: pos.ask_at_entry,
@@ -1234,7 +1247,8 @@ function closeDryPosition(pos, exitPrice, reason, result) {
 }
   ls.realized = Number((ls.realized + pnl).toFixed(2));
   ls.heartbeat = new Date().toISOString();
-  
+  noteClipOutcome(pnl);
+
   // Record fill quality
   if (fillQuality != null) {
     state.fill_quality_db.push({
@@ -1307,14 +1321,20 @@ async function markDryPositions() {
             const heldMs = Date.now() - new Date(pos.opened).getTime();
             if (heldMs < Number(state.runtime.min_hold_sec || 45) * 1000) continue;
 
-            // Time-decay exit: force exit at 80% of contract lifetime
-            const totalLifeMs = new Date(q.close_time).getTime() - new Date(pos.opened).getTime();
-            const lifePct = heldMs / totalLifeMs;
-            if (lifePct > 0.8) { closeDryPosition(pos, bid, 'time_decay', ''); continue; }
+            // High-water mark for the trailing stop.
+            if (bid != null && bid > (pos.hwm != null ? pos.hwm : pos.entry_price)) pos.hwm = bid;
 
-            // Trailing stop: 50% profit lock once mark >= entry + 0.5*edge
-            if (bid != null && pos.edge_at_entry > 0 && bid >= pos.entry_price + 0.5 * pos.edge_at_entry) {
-              const trailStop = pos.entry_price + (bid - pos.entry_price) * 0.5;
+            // Time-decay exit at 80% of contract lifetime - LOSERS ONLY.
+            // Winners (bid > entry) ride to settlement for the full $1 payout.
+            const totalLifeMs = new Date(q.close_time).getTime() - new Date(pos.opened).getTime();
+            const lifePct = totalLifeMs > 0 ? heldMs / totalLifeMs : 1;
+            if (lifePct > 0.8 && bid != null && bid <= pos.entry_price) { closeDryPosition(pos, bid, 'time_decay', ''); continue; }
+
+            // Trailing stop: lock half the gain once the mark has moved our way
+            // by at least max(2c, half the entry edge) above entry.
+            const trailArmed = (pos.hwm != null ? pos.hwm : pos.entry_price) >= pos.entry_price + Math.max(0.02, 0.5 * (pos.edge_at_entry || 0));
+            if (trailArmed && bid != null) {
+              const trailStop = pos.entry_price + ((pos.hwm != null ? pos.hwm : bid) - pos.entry_price) * 0.5;
               if (bid <= trailStop) { closeDryPosition(pos, bid, 'trail_stop', ''); continue; }
             }
 
@@ -1378,6 +1398,7 @@ async function engineTick() {
     // Maker entry: use bid instead of ask
     const price = side === 'YES' ? q.yes_bid : q.no_bid;
     if (price == null) { ls.skips++; ls.last_skip = 'no bid on ' + side; continue; }
+    if (q.synthetic) { ls.skips++; ls.last_skip = 'synthetic quote - not tradeable'; continue; }
     
     // Lane-specific price bounds (DRY: looser for analysis)
     const maxPrice = lc.max_price ?? state.runtime.max_price;
@@ -1417,14 +1438,13 @@ async function engineTick() {
       ls.skips++; ls.last_skip = 'max hold time exceeded'; continue;
     }
 
-    const fair = side === 'YES' ? (q.yes_bid + result.edge) : (q.no_bid + result.edge);
+    // REAL model fair value for the chosen side (drives fair_at_entry records).
+    const fair = result.fair != null ? result.fair : price;
     // OPERATOR_LAW: if the operator stopped this lane mid-tick, place NO order.
     // Enforce: operator's last button push is absolute law.
     OPERATOR_LAW.enforce('engineTick mid-tick check', { lane: lane.name, running: ls.running });
     if (!ls.running) { ls.skips++; ls.last_skip = 'operator stop (mid-tick)'; continue; }
-    const opened = state.mode === 'dry'
-      ? await openDryPosition(lane, q, side, price, fair, result.edge, perSec)
-      : openDryPosition(lane, q, side, price, fair, result.edge, perSec);
+    const opened = await openDryPosition(lane, q, side, price, fair, result.edge, perSec);
     if (opened) { ls.last_entry_at = Date.now(); ls.pending_edge = null; }
   }
 }
@@ -1812,27 +1832,31 @@ async function noBook() {
       const spread = no_ask - no_bid;
       if (spread > 0.05) continue; // skip wide spreads
       
-      // Edge = fair - ask (we buy NO at ask, fair says NO should be 1-fair)
-      const edge = fair - no_ask; // fair is the NO probability; edge = model NO fair - NO ask
-      if (edge < 0.004) continue; // MINIMUM 0.4% edge
+      // Winning pattern, real basis: we ENTER at the bid (maker), so edge is
+      // measured against the bid. Deep-NO only: model NO prob >= min_fair and
+      // entry price <= max_no_price (high win rate, capped risk, big payout).
+      const anCfg = { min_fair: 0.65, max_no_price: 0.35, min_edge: 0.02, ...(state.runtime.all_no || {}) };
+      if (fair < anCfg.min_fair) continue;             // probability floor
+      if (no_bid > anCfg.max_no_price) continue;        // price cap (cheap NO only)
+      const edge = fair - no_bid;                       // REAL maker edge
+      if (edge < anCfg.min_edge) continue;
       
       // Kelly with cap
-      const kelly = Math.max(0, edge / (1 - no_ask));
+      const kelly = Math.max(0, edge / (1 - no_bid));
       const kellyCapped = Math.min(0.25, kelly); // cap at 25% Kelly
       
       // Sizing: clip-based with Kelly fraction
-      const qty = Math.max(1, Math.floor(5 * kellyCapped / Math.max(0.01, no_ask)));
+      const qty = Math.max(1, Math.floor(5 * kellyCapped / Math.max(0.01, no_bid)));
       if (qty < 1) continue;
       
-      const cost = Number((qty * no_ask).toFixed(2));
+      const cost = Number((qty * no_bid).toFixed(2));
       
-      // Dynamic stops based on volatility
-      const volAdj = Math.min(1.5, Math.max(0.5, perSec * 100));
-      const stopLoss = no_ask * (1 - 0.15 * volAdj); // 15% base, vol-adjusted
-      const takeProfit = Math.min(0.99, no_ask + (no_ask - stopLoss) * 2.5); // 2.5:1 R:R
+      // Flat 20% stop; winners ride to settlement (TP near-certainty only).
+      const stopLoss = no_bid * 0.8;
+      const takeProfit = 0.95;
       
       // Confidence score
-      const confidence = Math.min(1, edge / 0.03);
+      const confidence = Math.min(1, edge / 0.08);
       
       rows.push({
         id: q.ticker,
@@ -1857,6 +1881,9 @@ async function noBook() {
         no_ask,
         spread,
         tau,
+        strike: q.strike,
+        sigma: perSec || null,
+        spot_product: asset,
       });
     }
   }
@@ -1891,7 +1918,7 @@ async function getAllTradableSeries() {
 // ---------------------------------------------------------------------------
 // ALL NO MARKETS - Entry/Exit Trade Functions
 // ---------------------------------------------------------------------------
-function createAllNoEntry(market_id, entry_price, quantity, fair_at_entry, edge, kelly, stop_loss, take_profit, confidence, expiration) {
+function createAllNoEntry(market_id, entry_price, quantity, fair_at_entry, edge, kelly, stop_loss, take_profit, confidence, expiration, extra) {
   const mode = state.mode;
   const book = state.all_no[mode];
   if (!book) return { error: 'Book not found for mode: ' + mode };
@@ -1914,10 +1941,15 @@ function createAllNoEntry(market_id, entry_price, quantity, fair_at_entry, edge,
   }
 
   const id = market_id + '-' + Date.now();
+  const x = extra || {};
   const position = {
     id,
     market_id,
     strategy: 'all_no_markets',
+    side: 'NO',
+    spot: x.spot_product || null,
+    strike: x.strike != null ? x.strike : null,
+    sigma_per_sec: x.sigma != null ? x.sigma : null,
     entry_price: Number(entry_price.toFixed(3)),
     quantity: Math.floor(quantity),
     cost,
@@ -1932,17 +1964,11 @@ function createAllNoEntry(market_id, entry_price, quantity, fair_at_entry, edge,
     opened_at: new Date().toISOString(),
   };
 
-  // Track locally first
+  // DRY book: pure paper ledger. NEVER posts real Kalshi orders.
   book.balance -= cost;
   book.positions.push(position);
   book.entries++;
   save();
-
-  // In DRY mode, also post a real Kalshi NO-side order so the ledger and the
-  // Kalshi book agree. DRY mode stays a pure paper book.
-  if (state.mode === 'dry') {
-    postAllNoOrder(position, 'enter');
-  }
 
   return { ok: true, position, balance: book.balance };
 }
@@ -1973,8 +1999,9 @@ function closeAllNoPosition(position_id, exit_price, exit_reason) {
     proceeds,
     pnl: net_pnl,
     roi,
-    fair_at_entry: pos.fair_at_entry,
-    kelly_fraction: pos.kelly_fraction,
+    fair_at_entry: pos.fair_at_entry != null ? pos.fair_at_entry : null,
+    edge_at_entry: pos.edge_at_entry != null ? pos.edge_at_entry : null,
+    kelly_fraction: pos.kelly_fraction != null ? pos.kelly_fraction : null,
     fee_paid,
     exit_reason,
     opened_at: pos.opened_at,
@@ -1986,13 +2013,9 @@ function closeAllNoPosition(position_id, exit_price, exit_reason) {
   book.closed_trades.push(trade);
   book.balance += proceeds - fee_paid;
   book.total_pnl += net_pnl;
+  noteClipOutcome(net_pnl);
   save();
   log('all_no_exit', { id: pos.id, market_id: pos.market_id, entry: pos.entry_price, exit: exit_price, pnl: net_pnl, balance_after: book.balance });
-
-  // In DRY mode, also post a real Kalshi NO-side exit order
-  if (state.mode === 'dry') {
-    postAllNoOrder(pos, 'exit', exit_price);
-  }
 
   return { ok: true, trade, balance: book.balance, pnl: net_pnl };
 }
@@ -2003,41 +2026,12 @@ function strategyForSeries(series) {
 }
 
 // ---------------------------------------------------------------------------
-// ALL NO MARKETS - Kalshi order placement (LIVE mode only - real money)
+// ALL NO MARKETS - Kalshi order placement
 // ---------------------------------------------------------------------------
-async function postAllNoOrder(position, action, exit_price) {
-  // Post a real Kalshi NO-side order for the ALL NO MARKETS book.
-  // DRY mode: paper only - never posts real orders.
-  // LIVE mode: posts real orders to Kalshi.
-  if (state.mode !== 'live') return null;
-  try {
-    const side = 'NO';
-    const qty = position.quantity;
-    const price = action === 'enter' ? position.entry_price : exit_price;
-    const expiration = position.expiration;
-    const marker = crypto.randomBytes(6).toString('hex');
-    const route = '/portfolio/orders';
-    const body = JSON.stringify({
-      marker,
-      side,
-      quantity: qty,
-      price: price,
-      expiration,
-      option_type: 'binary',
-      taker: side,
-    });
-    const ts = Math.round(Date.now() / 1000);
-    const method = 'POST';
-    const fullPath = '/trade-api/v2' + route;
-    const signature = sign(kalshi.accounts.dry, method, fullPath, ts, 'pss');
-    const res = await kalshi.raw(method, route, body, { 'x-kalshi-ts': String(ts), 'x-kalshi-signature': signature, 'content-type': 'application/json' });
-    log('all_no_order', { id: position.id, action, status: res.status, marker });
-    return { ok: true, status: res.status, marker };
-  } catch (e) {
-    log('all_no_order_error', { id: position.id, action, error: String(e.message || e) });
-    return { ok: false, error: String(e.message || e) };
-  }
-}
+// REMOVED: postAllNoOrder posted a malformed Kalshi order (no ticker, bogus
+// option_type/taker fields, dry-account signature) from a PAPER book. The DRY
+// server never posts real orders. Real orders live only in Kai-LIVE via
+// live_engine.js (LO.openEntry / LO.exitPosition) with the correct V2 schema.
 
 // ---------------------------------------------------------------------------
 // Logs + SSE
@@ -2316,7 +2310,7 @@ async function handle(req, res) {
       const b = await readBody(req);
       const ls = laneState(name);
       // OPERATOR_LAW: The operator's command is IMMEDIATE, ABSOLUTE LAW.
-      // Enforce at runtime — this is the ONLY writer of ls.running.
+      // Enforce at runtime - this is the ONLY writer of ls.running.
       OPERATOR_LAW.enforce('toggleStrategy', { lane: name, requestedRunning: b.running });
       if (typeof b.running === 'boolean') {
         ls.running = b.running;
@@ -2326,9 +2320,9 @@ async function handle(req, res) {
       ls.started_at = ls.running ? new Date().toISOString() : ls.started_at;
             ls.stop_reason = ls.running ? '' : 'operator stop';
             ls.heartbeat = new Date().toISOString();
-            // Synchronous save for operator commands — must persist immediately
+            // Synchronous save for operator commands - must persist immediately
             try { fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 1)); } catch (e) { }
-            // OPERATOR_LAW: the operator just moved a lane — EXTERMINATE any
+            // OPERATOR_LAW: the operator just moved a lane - EXTERMINATE any
             // supervisor/watchdog so it can never reverse this button push.
             exterminateSupervisors();
             broadcast('strategy', name + (ls.running ? ' started' : ' stopped'));
@@ -2775,21 +2769,27 @@ async function runAllNoEngine() {
   const noLs = laneState('all_no_markets');
   if (!noLs || !noLs.running) return;
   
+  // Operator runtime config wins over code defaults.
+  const cfg = Object.assign({}, ALL_NO_CONFIG, state.runtime.all_no || {});
+  
   const rows = await noBook();
   const book = state.all_no[state.mode];
   if (!book || book.balance < 5) return;
   
   // Portfolio heat check
   const exposure = book.positions.reduce((a, p) => a + p.cost, 0);
-  if (exposure > book.balance * ALL_NO_CONFIG.max_exposure_pct) return;
-  if (book.positions.length >= ALL_NO_CONFIG.max_concurrent) return;
+  if (exposure > book.balance * cfg.max_exposure_pct) return;
+  if (book.positions.length >= cfg.max_concurrent) return;
   
   for (const r of rows) {
-    if (r.edge < ALL_NO_CONFIG.min_edge) continue;
+    if (r.edge < cfg.min_edge) continue;
     if (r.kelly <= 0) continue;
-    if (r.confidence < ALL_NO_CONFIG.min_confidence) continue;
-    if (r.spread < ALL_NO_CONFIG.min_spread || r.spread > ALL_NO_CONFIG.max_spread) continue;
-    if (r.tau < ALL_NO_CONFIG.min_tau_sec || r.tau > ALL_NO_CONFIG.max_tau_sec) continue;
+    if (r.confidence < (cfg.min_confidence != null ? cfg.min_confidence : 0.3)) continue;
+    if (r.spread < (cfg.min_spread != null ? cfg.min_spread : 0) || r.spread > (cfg.max_spread != null ? cfg.max_spread : 0.05)) continue;
+    if (r.tau < (cfg.min_tau_sec != null ? cfg.min_tau_sec : 30) || r.tau > (cfg.max_tau_sec != null ? cfg.max_tau_sec : 3600)) continue;
+    // Probability floor + price cap (defense in depth; noBook already filters).
+    if (r.fair < (cfg.min_fair != null ? cfg.min_fair : 0.65)) continue;
+    if (r.limit_entry > (cfg.max_no_price != null ? cfg.max_no_price : 0.35)) continue;
     
     // Use pre-calculated values from noBook
     const entry = r.limit_entry; // maker at bid
@@ -2800,9 +2800,10 @@ async function runAllNoEngine() {
     if (cost > book.balance) continue;
     
     await createAllNoEntry(r.market_id, entry, qty, r.fair, r.edge, r.kelly,
-      r.stop, r.take_profit, r.confidence, r.expiration);
+      r.stop, r.take_profit, r.confidence, r.expiration,
+      { strike: r.strike, sigma: r.sigma, spot_product: r.spot_product });
     
-    if (book.positions.length >= ALL_NO_CONFIG.max_concurrent) break;
+    if (book.positions.length >= cfg.max_concurrent) break;
   }
 }
 
@@ -2817,6 +2818,20 @@ async function runAllNoExits() {
     if (pos.status !== 'resting') continue;
     
     const q = await quoteForTicker(pos.market_id);
+    
+    // SETTLEMENT: book the real Kalshi result at $1/$0. Without this the
+    // position zombied forever once the market finalized (no_bid == null).
+    if (q && (q.result === 'yes' || q.result === 'no')) {
+      const settled = q.result === 'no' ? 1 : 0; // we hold NO
+      const result = closeAllNoPosition(pos.id, settled, 'settled');
+      if (result.ok) log('all_no_settled', { market_id: pos.market_id, result: q.result, pnl: result.pnl });
+      continue;
+    }
+    if (q && (q.status === 'finalized' || q.status === 'settled')) {
+      const result = closeAllNoPosition(pos.id, 0, 'settled_no_result');
+      if (result.ok) log('all_no_settled_no_result', { market_id: pos.market_id, pnl: result.pnl });
+      continue;
+    }
     if (!q || !q.no_bid) continue;
     
     const mark = q.no_bid;
@@ -2834,7 +2849,8 @@ async function runAllNoExits() {
     } else if (pos.stop_loss && mark <= pos.stop_loss) {
       shouldExit = true;
       exitReason = 'stop_loss';
-    } else if (lifePct > ALL_NO_CONFIG.max_hold_pct) {
+    } else if (lifePct > 0.8 && mark <= pos.entry_price) {
+      // LOSERS get cut late; winners ride to settlement for the full $1.
       shouldExit = true;
       exitReason = 'time_decay';
     }
@@ -2880,7 +2896,7 @@ async function boot() {
   const spotProducts = ['BTC-USD', 'ETH-USD', 'XRP-USD', 'HYPE-USD'];
   const coinbaseWS = new CoinbaseWS(spotProducts,
       (ticker) => {
-        console.log('[CoinbaseWS] Ticker received:', ticker.product_id, ticker.price);
+        // High-frequency feed: NO per-ticker logging (PC strain).
         const p = spot[ticker.product_id];
         if (p) {
           p.price = ticker.price;
@@ -2922,6 +2938,10 @@ async function boot() {
         if (wait > 0) {
           await new Promise(r => setTimeout(r, wait));
         }
+        // Re-check after the await: another concurrent process() loop may
+        // have drained the queue or filled the concurrency slots while we
+        // were sleeping. shift() must never return undefined here.
+        if (!this.queue.length || this.running >= this.maxConcurrent) continue;
         const { fn, resolve, reject } = this.queue.shift();
         this.running++;
         this.lastRequestTime = Date.now();
@@ -2945,7 +2965,7 @@ async function boot() {
   };
 
   // OPERATOR_LAW: exterminate any supervisor/watchdog on boot and continuously
-  // so nothing can ever override the operator's button pushes — imperial law.
+  // so nothing can ever override the operator's button pushes - imperial law.
   try { exterminateSupervisors(); } catch (e) { }
   setInterval(() => { try { exterminateSupervisors(); } catch (e) { } }, 3000);
   series_kind.start();

@@ -62,7 +62,7 @@ class CoinbaseWS {
     if (!this.connected || this.subscribed) return;
 
     const channels = ['ticker'];
-    
+
     // Note: level2 channel requires special API permissions
     // if (this.useAuth) {
     //   channels.push('level2');
@@ -79,14 +79,14 @@ class CoinbaseWS {
       const timestamp = Math.floor(Date.now() / 1000);
       const message = timestamp + 'GET' + '/users/self/verify';
       const signature = this.sign(message);
-      
+
       msg.signature = signature;
       msg.key = this.credentials.apiKey;
       msg.passphrase = this.credentials.apiPassphrase || '';
       msg.timestamp = timestamp.toString();
-      
-      console.log('[CoinbaseWS] Auth params:', { 
-        key: msg.key.slice(0, 8) + '...', 
+
+      console.log('[CoinbaseWS] Auth params:', {
+        key: msg.key.slice(0, 8) + '...',
         hasPassphrase: !!msg.passphrase,
         timestamp: msg.timestamp,
         signature: msg.signature.slice(0, 16) + '...'
@@ -107,7 +107,9 @@ class CoinbaseWS {
   startHeartbeat() {
     this.heartbeatTimer = setInterval(() => {
       if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-        this.ws.send(JSON.stringify({ type: 'heartbeat' }));
+        // Protocol-level ping. Sending {"type":"heartbeat"} as JSON is treated
+        // by Coinbase as a subscribe with no channels -> "No channels provided".
+        this.ws.ping();
       }
     }, 30000);
   }

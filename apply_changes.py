@@ -31,8 +31,8 @@ if firewebhooks_match:
     # Remove from inside handle
     content = content.replace(firewebhooks_match.group(0), '')
     # Insert before handle function
-    content = content.replace('async function handle(req, res) {', 
-        'async function fireWebhooks(event, data) {\n' + firewebhooks_code.split('\n', 1)[1] + 
+    content = content.replace('async function handle(req, res) {',
+        'async function fireWebhooks(event, data) {\n' + firewebhooks_code.split('\n', 1)[1] +
         '\nasync function handle(req, res) {')
 
 # 4. Add throttle setup inside boot() after coinbaseWS.connect()
@@ -44,14 +44,14 @@ boot_throttle = '''
     queue: [],
     running: 0,
     lastRequestTime: 0,
-    
+
     async run(fn) {
       return new Promise((resolve, reject) => {
         this.queue.push({ fn, resolve, reject });
         this.process();
       });
     },
-    
+
     async process() {
       while (this.queue.length && this.running < this.maxConcurrent) {
         const now = Date.now();
@@ -82,7 +82,7 @@ boot_throttle = '''
   };
 
 '''
-content = content.replace('  coinbaseWS.connect();\n\n  // OPERATOR_LAW: exterminate', 
+content = content.replace('  coinbaseWS.connect();\n\n  // OPERATOR_LAW: exterminate',
     '  coinbaseWS.connect();\n\n' + boot_throttle + '  // OPERATOR_LAW: exterminate')
 
 # 5. Add engineTick interval in boot() after kalshiWS.subscribeOrders()

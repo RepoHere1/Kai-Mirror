@@ -2,19 +2,19 @@ import re
 
 # Fix encoding issues in HTML files with BOM handling
 replacements = {
-    'â€"': '—',      # em dash
-    'â€¦': '…',      # ellipsis
-    'Â·': '·',       # middle dot
-    'â€™': "'",       # apostrophe
-    'â€œ': '"',       # opening quote
-    'â€': '"',        # closing quote
-    'â€': '"',        # closing quote (alt)
-    'Â': '',          # stray
-    'â€"': '—',      # em dash (alt)
-    'â€ ': '— ',     # em dash with space
-    'â€œ': '"',       # opening quote
-    'â€š': "'",       # single quote
-    'â€˜': "'",       # single quote
+    'EUR"': '-',      # em dash
+    '...': '...',      # ellipsis
+    '-': '-',       # middle dot
+    ''': "'",       # apostrophe
+    '"': '"',       # opening quote
+    'EUR': '"',        # closing quote
+    'EUR': '"',        # closing quote (alt)
+    '': '',          # stray
+    'EUR"': '-',      # em dash (alt)
+    'EUR ': '- ',     # em dash with space
+    '"': '"',       # opening quote
+    '': "'",       # single quote
+    ''': "'",       # single quote
 }
 
 files = [
@@ -28,11 +28,11 @@ for fname in files:
         # Try UTF-16 first (BOM files)
         with open(path, 'r', encoding='utf-16') as f:
             content = f.read()
-        
+
         original = content
         for bad, good in replacements.items():
             content = content.replace(bad, good)
-        
+
         if content != original:
             with open(path, 'w', encoding='utf-8') as f:
                 f.write(content)
