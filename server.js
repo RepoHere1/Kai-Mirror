@@ -35,6 +35,7 @@ const kalshi = require('./kalshi');
 const kilo = require('./kilo');
 const brain = require('./brain_dry');
 const series_kind = require('./series_kind');
+const conviction = require('./conviction');
 const quote_stream = require('./quote_stream');
 const { KalshiWS } = require('./kalshi_ws');
 const { CoinbaseWS } = require('./coinbase_ws');
@@ -1330,11 +1331,12 @@ async function markDryPositions() {
             const lifePct = totalLifeMs > 0 ? heldMs / totalLifeMs : 1;
             if (lifePct > 0.8 && bid != null && bid <= pos.entry_price) { closeDryPosition(pos, bid, 'time_decay', ''); continue; }
 
-            // Trailing stop: lock half the gain once the mark has moved our way
-            // by at least max(2c, half the entry edge) above entry.
-            const trailArmed = (pos.hwm != null ? pos.hwm : pos.entry_price) >= pos.entry_price + Math.max(0.02, 0.5 * (pos.edge_at_entry || 0));
+            // Trailing stop: arm only after a real move (max(4c, full edge)) and
+            // then give back only a QUARTER of the peak gain. The old 50% lock cut
+            // winners early that should ride toward settlement.
+            const trailArmed = (pos.hwm != null ? pos.hwm : pos.entry_price) >= pos.entry_price + Math.max(0.04, (pos.edge_at_entry || 0));
             if (trailArmed && bid != null) {
-              const trailStop = pos.entry_price + ((pos.hwm != null ? pos.hwm : bid) - pos.entry_price) * 0.5;
+              const trailStop = pos.entry_price + ((pos.hwm != null ? pos.hwm : bid) - pos.entry_price) * 0.75;
               if (bid <= trailStop) { closeDryPosition(pos, bid, 'trail_stop', ''); continue; }
             }
 
@@ -2793,10 +2795,24 @@ async function runAllNoEngine() {
     // Probability floor + price cap (defense in depth; noBook already filters).
     if (r.fair < (cfg.min_fair != null ? cfg.min_fair : 0.65)) continue;
     if (r.limit_entry > (cfg.max_no_price != null ? cfg.max_no_price : 0.35)) continue;
-    
+    // ANTI-STACK: one position per market - UNLESS the Conviction Press has
+    // verified this bucket's win rate from settled trades (then a second add
+    // and bigger size are earned, never assumed).
+    const press = conviction.pressLevel(
+      conviction.grade((state.all_no[state.mode].closed_trades || []).concat(state.dry.closed || [])),
+      r.market_id, r.limit_entry
+    );
+    const sameMarket = book.positions.filter(p => p.market_id === r.market_id).length;
+    const maxSame = press.level >= 2 ? 2 : 1;
+    if (sameMarket >= maxSame) continue;
+    if (press.level > 1) {
+      log('conviction_press', { market_id: r.market_id, level: press.level, n: press.n, win_rate: Number((press.winRate || 0).toFixed(3)) });
+    }
+
     // Use pre-calculated values from noBook
     const entry = r.limit_entry; // maker at bid
-    const qty = r.qty;
+    // Conviction Press earns bigger size only from settled-trade evidence.
+    const qty = Math.max(1, Math.floor(r.qty * press.level));
     if (qty < 1) continue;
     
     const cost = qty * entry;
@@ -2871,6 +2887,9 @@ async function boot() {
   // OPERATOR_LAW: Assert no supervisor exists or can be spawned.
   OPERATOR_LAW.assertNoSupervisor();
   OPERATOR_LAW.enforce('boot', { action: 'server_start', mode: 'dry' });
+  // Real boot time (the persisted booted_at used to leak across restarts and
+  // show fake 50-hour uptimes in /api/health).
+  state.booted_at = new Date().toISOString();
   log('boot', { mode: 'dry', dry_balance: dryCash(), kalshi_live: kalshi.LIVE_BASE });
 
   // Initial spot fetch for immediate data
