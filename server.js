@@ -631,6 +631,8 @@ function defaultState() {
     min_price: 0.005,
     take_profit: 0.98,
     stop_loss: 0.1,
+    // Trail stop OFF: a trailing exit gave back winners (LIVE: 15 trail exits would have settled +$30 more held). Hard stop_loss stays ON.
+    trail_stop: false,
     kelly_cap: 0.95,
     min_hold_sec: 5,
     entry_cooldown_sec: 5,
@@ -1338,7 +1340,7 @@ async function markDryPositions() {
             // then give back only a QUARTER of the peak gain. The old 50% lock cut
             // winners early that should ride toward settlement.
             const trailArmed = (pos.hwm != null ? pos.hwm : pos.entry_price) >= pos.entry_price + Math.max(0.04, (pos.edge_at_entry || 0));
-            if (trailArmed && bid != null) {
+            if (state.runtime.trail_stop === true && trailArmed && bid != null) {
               const trailStop = pos.entry_price + ((pos.hwm != null ? pos.hwm : bid) - pos.entry_price) * 0.75;
               if (bid <= trailStop) { closeDryPosition(pos, bid, 'trail_stop', ''); continue; }
             }
