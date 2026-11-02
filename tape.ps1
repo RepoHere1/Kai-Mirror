@@ -2,6 +2,7 @@
 # happens: entries, closes, balance moves, server restarts. A PULSE line
 # every 5 minutes proves the heart is beating. Run:  .\tape.ps1
 $ErrorActionPreference = 'SilentlyContinue'
+$ProgressPreference = 'SilentlyContinue'   # kills the blue "Reading web response" popup
 $Cfg = @{ Tag = 'DRY'; Port = 8787 }
 
 Write-Host "==== KAI TAPE - DRY book (events + 5-min pulse, Ctrl+C to stop) ====" -ForegroundColor White
@@ -10,6 +11,8 @@ $knownClosed = @{}   # trade id -> $true
 $knownOpen = @{}     # position id -> $true
 $knownRT = @{}       # lane trade composite key -> $true (recent-trades feed)
 $lastPulseSig = ''   # last pulse state signature (suppress identical pulses)
+$lastLanePnl = $null # lane book aggregate pnl (from /api/recent-trades total_pnl)
+$lastLaneCount = 0   # lane book total closed trades
 $lastBal = $null; $lastPnl = $null; $lastUptime = $null; $lastPulse = 0
 
 function J([string]$u) {
@@ -26,6 +29,12 @@ if ($seed) {
   foreach ($t in @($seed.closed_rows)) { $knownClosed[$t.id] = $true }
   foreach ($p in @($seed.open_rows)) { $knownOpen[$p.id] = $true }
   $lastBal = [double]$seed.book.balance; $lastPnl = [double]$seed.book.pnl
+}
+$seedRT = J "http://127.0.0.1:$($Cfg.Port)/api/recent-trades?per_page=200"
+if ($seedRT -and $seedRT.trades) {
+  foreach ($t in @($seedRT.trades)) { $knownRT["$($t.market_id)|$($t.exit_timestamp)|$($t.entry_price)|$($t.pnl)"] = $true }
+  if ($seedRT.total_pnl -ne $null) { $lastLanePnl = [double]$seedRT.total_pnl }
+  $lastLaneCount = [int]$seedRT.total
 }
 
 while ($true) {
@@ -52,7 +61,7 @@ while ($true) {
     $lastBal = $bal; $lastPnl = $pnl
   }
 
-  $rt = J "http://127.0.0.1:$($Cfg.Port)/api/recent-trades"
+  $rt = J "http://127.0.0.1:$($Cfg.Port)/api/recent-trades?per_page=200"
   if ($rt -and $rt.trades) {
     foreach ($t in @($rt.trades)) {
       $key = "$($t.market_id)|$($t.exit_timestamp)|$($t.entry_price)|$($t.pnl)"
@@ -64,6 +73,8 @@ while ($true) {
         }
       }
     }
+    if ($rt.total_pnl -ne $null) { $lastLanePnl = [double]$rt.total_pnl }
+    $lastLaneCount = [int]$rt.total
     if ($knownRT.Count -gt 400) { $knownRT.Clear(); foreach ($t in @($rt.trades)) { $knownRT["$($t.market_id)|$($t.exit_timestamp)|$($t.entry_price)|$($t.pnl)"] = $true } }
   }
 
@@ -78,14 +89,16 @@ while ($true) {
   }
 
   $nowSec = [int][DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
-  $stateSig = "$([Math]::Round($lastBal,2))|$([Math]::Round($lastPnl,2))|$(if ($nb) { @($nb.open_rows).Count } else { '?' })|$(if ($nb) { $nb.book.entries } else { '?' })"
+  $boots = if ($nb) { $nb.boots } else { '?' }
+  $stateSig = "$([Math]::Round($lastBal,2))|$([Math]::Round($lastPnl,2))|$lastLanePnl|$lastLaneCount|$(if ($nb) { @($nb.open_rows).Count } else { '?' })|$(if ($nb) { $nb.book.entries } else { '?' })|$boots"
   if ($nowSec - $lastPulse -ge 300 -and ($stateSig -ne $lastPulseSig -or $nowSec - $lastPulse -ge 3600)) {
     $lastPulse = $nowSec
     $lastPulseSig = $stateSig
     $st = J "http://127.0.0.1:$($Cfg.Port)/api/strategies"
     $lanesOn = 0
     if ($st) { foreach ($p in $st.PSObject.Properties) { if ($p.Value.running) { $lanesOn++ } } }
-    Line 'DarkCyan' ("PULSE alive | bal `${0} pnl `${1} open {2} entries {3} | lanes {4} on | uptime {5}m" -f [Math]::Round($lastBal,2), [Math]::Round($lastPnl,2), ($(if ($nb) { @($nb.open_rows).Count } else { '?' })), $(if ($nb) { $nb.book.entries } else { '?' }), $lanesOn, [int]($lastUptime/60))
+    $totPnl = [Math]::Round($lastPnl + $lastLanePnl, 2)
+    Line 'DarkCyan' ("PULSE alive | bal `${0} | all_no `${1} (n={2}) | lanes `${3} (n={4}) | TOTAL `${5} | lanes {6} on | uptime {7}m | boots {8}" -f [Math]::Round($lastBal,2), [Math]::Round($lastPnl,2), ($(if ($nb) { $nb.book.entries } else { '?' })), [Math]::Round($lastLanePnl,2), $lastLaneCount, $totPnl, $lanesOn, [int]($lastUptime/60), $boots)
   }
 
   Start-Sleep -Seconds 5

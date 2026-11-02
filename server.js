@@ -760,6 +760,9 @@ function loadState() {
   } catch (e) { return defaultState(); }
 }
 let state = loadState();
+// BOOT COUNTER: every process start bumps this; the tape PULSE prints it so
+// silent watchdog restart loops become visible.
+state.boot_count = (state.boot_count || 0) + 1;
 let saveTimer = null;
 function save() {
   if (saveTimer) return;
@@ -1796,10 +1799,14 @@ function getAllNoBook() {
       sweet: open_sweet,
     },
     no_lanes_enabled: state.no_lanes_enabled,
+    boots: state.boot_count || 0,
   };
 }
 
 async function noBook() {
+  // DIVERGENCE POLICY: Mirror is the LAB - keep gates loose (cluster=2, no
+  // price floor, HYPE live) to generate statistics. LIVE is the product with
+  // tight gates. Do NOT sync LIVE tightenings back into Mirror.
   // Return available NO-side market recommendations for potential entries
   // Scans ALL Kalshi series, not just DRY/LIVE lanes - open to ANY prediction market
   const rows = [];
@@ -1846,11 +1853,28 @@ async function noBook() {
         if (bid == null || askPx == null) return;
         const sideSpread = askPx - bid;
         if (sideSpread > 0.06) return; // per-side thin line
-        if (fairSide < anCfg.min_fair) return;              // probability floor
+        // FAT-TAIL MARGIN: HYPE's jumps crush a smooth gaussian model. Demand
+        // more probability margin there.
+        const fairFloor = asset === 'HYPE-USD' ? Math.max(anCfg.min_fair, 0.58) : anCfg.min_fair;
+        if (fairSide < fairFloor) return;                   // probability floor
         if (bid > cap) return;                              // price cap (cheap only)
         if (bid < (anCfg.min_entry_price || 0)) return;     // no sub-floor lottery tickets
+        // MOMENTUM CONFIRMATION: the gaussian model knows only distance from
+        // strike. Winners entered while the move AWAY from the strike was
+        // continuing; losers were reversals. Block entries when spot is
+        // driving back toward the strike faster than half a 60s sigma.
+        const pts = (sp && Array.isArray(sp.points)) ? sp.points : [];
+        if (pts.length >= 31 && perSec) {
+          const mom = (sp.price - pts[pts.length - 31].p) / pts[pts.length - 31].p;
+          const drift60 = 0.5 * perSec * Math.sqrt(60);
+          if (side === 'NO' && mom > drift60) return;   // spot rising toward strike
+          if (side === 'YES' && mom < -drift60) return; // spot falling toward strike
+        }
         const e = fairSide - bid;                           // REAL maker edge
         if (e < anCfg.min_edge) return;
+        // TOO-GOOD FILTER: an edge > max_edge means the MODEL is wrong, not
+        // that the market is giving money away.
+        if (e > (anCfg.max_edge != null ? anCfg.max_edge : 0.18)) return;
         const kelly = Math.max(0, e / (1 - bid));
         const kellyCapped = Math.min(0.25, kelly);          // cap at 25% Kelly
         const q2 = Math.max(1, Math.floor(5 * kellyCapped / Math.max(0.01, bid)));
@@ -2041,7 +2065,7 @@ function strategyForSeries(series) {
 function log(kind, obj) {
   const line = { at: new Date().toISOString(), kind, ...obj };
   state.logs.unshift(JSON.stringify(line));
-  if (state.logs.length > 400) state.logs.pop();
+  if (state.logs.length > 2000) state.logs.pop();
   noteProvenance({ kind, ...obj, at: line.at });
   save();
 }
