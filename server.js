@@ -1745,7 +1745,7 @@ function getAllNoBook() {
       id: p.id,
       market_id: p.market_id,
       strategy: p.strategy || 'all_no_markets',
-      side: 'NO',
+      side: p.side || 'NO',
       entry_price: p.entry_price,
       quantity: p.quantity,
       cost: Number(p.cost.toFixed(2)),
@@ -1764,7 +1764,7 @@ function getAllNoBook() {
       id: t.id,
       market_id: t.market_id,
       strategy: t.strategy || 'all_no_markets',
-      side: 'NO',
+      side: t.side || 'NO',
       entry_price: t.entry_price,
       exit_price: t.exit_price,
       quantity: t.quantity,
@@ -1832,61 +1832,57 @@ async function noBook() {
       if (!no_bid || !no_ask || no_bid <= 0.02 || no_ask >= 0.98) continue;
       
       const spread = no_ask - no_bid;
-      if (spread > 0.05) continue; // skip wide spreads
+      if (spread > 0.06) continue; // skip wide spreads (the hard thin line)
       
-      // Winning pattern, real basis: we ENTER at the bid (maker), so edge is
-      // measured against the bid. Deep-NO only: model NO prob >= min_fair and
-      // entry price <= max_no_price (high win rate, capped risk, big payout).
-      const anCfg = { min_fair: 0.65, max_no_price: 0.35, min_edge: 0.02, ...(state.runtime.all_no || {}) };
-      if (fair < anCfg.min_fair) continue;             // probability floor
-      if (no_bid > anCfg.max_no_price) continue;        // price cap (cheap NO only)
-      const edge = fair - no_bid;                       // REAL maker edge
-      if (edge < anCfg.min_edge) continue;
-      
-      // Kelly with cap
-      const kelly = Math.max(0, edge / (1 - no_bid));
-      const kellyCapped = Math.min(0.25, kelly); // cap at 25% Kelly
-      
-      // Sizing: clip-based with Kelly fraction
-      const qty = Math.max(1, Math.floor(5 * kellyCapped / Math.max(0.01, no_bid)));
-      if (qty < 1) continue;
-      
-      const cost = Number((qty * no_bid).toFixed(2));
-      
-      // Flat 20% stop; winners ride to settlement (TP near-certainty only).
-      const stopLoss = no_bid * 0.8;
-      const takeProfit = 0.95;
-      
-      // Confidence score
-      const confidence = Math.min(1, edge / 0.08);
-      
-      rows.push({
-        id: q.ticker,
-        market: q.title,
-        market_id: q.ticker,
-        strategy: 'all_no_markets',
-        side: 'NO',
-        limit_entry: no_bid, // MAKER at bid
-        qty,
-        cost,
-        fair: Number(fair.toFixed(3)),
-        edge: Number(edge.toFixed(4)),
-        kelly: Number(kellyCapped.toFixed(3)),
-        stop: Number(stopLoss.toFixed(3)),
-        take_profit: Number(takeProfit.toFixed(3)),
-        confidence: Number(confidence.toFixed(2)),
-        expiration: q.close_time,
-        status: 'candidate',
-        source: res.source,
-        host: res.host,
-        no_bid,
-        no_ask,
-        spread,
-        tau,
-        strike: q.strike,
-        sigma: perSec || null,
-        spot_product: asset,
-      });
+      // Deep-value thesis, real basis: we ENTER at the bid (maker), so edge is
+      // measured against the bid. Model prob >= min_fair and entry <= cap
+      // (high win rate, capped risk, big payout).
+      // YES-TWIN: the identical thesis mirrored to the other side of the book -
+      // a cheap high-probability YES is the same trade as a cheap
+      // high-probability NO. One scan, both sides, per-side caps.
+      const anCfg = { min_fair: 0.65, max_no_price: 0.35, max_yes_price: 0.35, min_edge: 0.02, allow_yes: true, ...(state.runtime.all_no || {}) };
+      const mkRow = (side, fairSide, bid, askPx) => {
+        const cap = side === 'YES' ? anCfg.max_yes_price : anCfg.max_no_price;
+        if (bid == null || askPx == null) return;
+        const sideSpread = askPx - bid;
+        if (sideSpread > 0.06) return; // per-side thin line
+        if (fairSide < anCfg.min_fair) return;              // probability floor
+        if (bid > cap) return;                              // price cap (cheap only)
+        if (bid < (anCfg.min_entry_price || 0)) return;     // no sub-floor lottery tickets
+        const e = fairSide - bid;                           // REAL maker edge
+        if (e < anCfg.min_edge) return;
+        const kelly = Math.max(0, e / (1 - bid));
+        const kellyCapped = Math.min(0.25, kelly);          // cap at 25% Kelly
+        const q2 = Math.max(1, Math.floor(5 * kellyCapped / Math.max(0.01, bid)));
+        if (q2 < 1) return;
+        rows.push({
+          id: q.ticker,
+          market: q.title,
+          market_id: q.ticker,
+          strategy: 'all_no_markets',
+          side,
+          limit_entry: bid, // MAKER at bid
+          qty: q2,
+          cost: Number((q2 * bid).toFixed(2)),
+          fair: Number(fairSide.toFixed(3)),
+          edge: Number(e.toFixed(4)),
+          kelly: Number(kellyCapped.toFixed(3)),
+          stop: Number((bid * 0.8).toFixed(3)),
+          take_profit: 0.95,
+          confidence: Number(Math.min(1, e / 0.08).toFixed(2)),
+          expiration: q.close_time,
+          status: 'candidate',
+          source: res.source,
+          host: res.host,
+          spread: sideSpread,
+          tau,
+          strike: q.strike,
+          sigma: perSec || null,
+          spot_product: asset,
+        });
+      };
+      mkRow('NO', fair, no_bid, no_ask);
+      if (anCfg.allow_yes !== false) mkRow('YES', 1 - fair, q.yes_bid, q.yes_ask);
     }
   }
   
@@ -1951,7 +1947,7 @@ function createAllNoEntry(market_id, entry_price, quantity, fair_at_entry, edge,
     id,
     market_id,
     strategy: 'all_no_markets',
-    side: 'NO',
+    side: x.side || 'NO',
     spot: x.spot_product || null,
     strike: x.strike != null ? x.strike : null,
     sigma_per_sec: x.sigma != null ? x.sigma : null,
@@ -1997,6 +1993,7 @@ function closeAllNoPosition(position_id, exit_price, exit_reason) {
     id: pos.id,
     market_id: pos.market_id,
     strategy: pos.strategy,
+    side: pos.side || 'NO',
     entry_price: pos.entry_price,
     exit_price: Number(exit_price.toFixed(3)),
     quantity: pos.quantity,
@@ -2798,8 +2795,10 @@ async function runAllNoEngine() {
     if (r.spread < (cfg.min_spread != null ? cfg.min_spread : 0) || r.spread > (cfg.max_spread != null ? cfg.max_spread : 0.05)) continue;
     if (r.tau < (cfg.min_tau_sec != null ? cfg.min_tau_sec : 30) || r.tau > (cfg.max_tau_sec != null ? cfg.max_tau_sec : 3600)) continue;
     // Probability floor + price cap (defense in depth; noBook already filters).
+    // YES-TWIN rows use their own cap (max_yes_price).
     if (r.fair < (cfg.min_fair != null ? cfg.min_fair : 0.65)) continue;
-    if (r.limit_entry > (cfg.max_no_price != null ? cfg.max_no_price : 0.35)) continue;
+    const sideCap = r.side === 'YES' ? (cfg.max_yes_price != null ? cfg.max_yes_price : (cfg.max_no_price != null ? cfg.max_no_price : 0.35)) : (cfg.max_no_price != null ? cfg.max_no_price : 0.35);
+    if (r.limit_entry > sideCap) continue;
     // ANTI-STACK: one position per market - UNLESS the Conviction Press has
     // verified this bucket's win rate from settled trades (then a second add
     // and bigger size are earned, never assumed).
@@ -2810,6 +2809,10 @@ async function runAllNoEngine() {
     const sameMarket = book.positions.filter(p => p.market_id === r.market_id).length;
     const maxSame = press.level >= 2 ? 2 : 1;
     if (sameMarket >= maxSame) continue;
+    // CLUSTER CAP: correlated same-round entries die together (evidence: four
+    // stop-losses in one :15 round). At most 2 positions share an expiration.
+    const sameRound = book.positions.filter(p => p.expiration === r.expiration).length;
+    if (sameRound >= 2) continue;
     if (press.level > 1) {
       log('conviction_press', { market_id: r.market_id, level: press.level, n: press.n, win_rate: Number((press.winRate || 0).toFixed(3)) });
     }
@@ -2825,7 +2828,7 @@ async function runAllNoEngine() {
     
     await createAllNoEntry(r.market_id, entry, qty, r.fair, r.edge, r.kelly,
       r.stop, r.take_profit, r.confidence, r.expiration,
-      { strike: r.strike, sigma: r.sigma, spot_product: r.spot_product });
+      { strike: r.strike, sigma: r.sigma, spot_product: r.spot_product, side: r.side });
     
     if (book.positions.length >= cfg.max_concurrent) break;
   }
@@ -2846,7 +2849,7 @@ async function runAllNoExits() {
     // SETTLEMENT: book the real Kalshi result at $1/$0. Without this the
     // position zombied forever once the market finalized (no_bid == null).
     if (q && (q.result === 'yes' || q.result === 'no')) {
-      const settled = q.result === 'no' ? 1 : 0; // we hold NO
+      const settled = q.result === (pos.side === 'YES' ? 'yes' : 'no') ? 1 : 0;
       const result = closeAllNoPosition(pos.id, settled, 'settled');
       if (result.ok) log('all_no_settled', { market_id: pos.market_id, result: q.result, pnl: result.pnl });
       continue;
@@ -2856,9 +2859,8 @@ async function runAllNoExits() {
       if (result.ok) log('all_no_settled_no_result', { market_id: pos.market_id, pnl: result.pnl });
       continue;
     }
-    if (!q || !q.no_bid) continue;
-    
-    const mark = q.no_bid;
+    const mark = pos.side === 'YES' ? q.yes_bid : q.no_bid;
+    if (!q || mark == null) continue;
     const tau = Math.max(0, (new Date(pos.expiration).getTime() - Date.now()) / 1000);
     const totalLife = Math.max(1, (new Date(pos.expiration).getTime() - new Date(pos.opened_at).getTime()) / 1000);
     const lifePct = 1 - tau / totalLife;
