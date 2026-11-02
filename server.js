@@ -1716,12 +1716,29 @@ function lastProvenance() {
 // ---------------------------------------------------------------------------
 // ALL NO book - separate book tracking NO-side market positions + trades
 // ---------------------------------------------------------------------------
-function getAllNoBook() {
+// YES / NO view of the ALL NO book (YES-TWIN rows live in this book too).
+// Trades with no stored side are legacy NO. Only the VIEW is filtered: the
+// engine, the shared balance and the stored records are untouched.
+function bookForSide(src, sideFilter) {
+  const want = sideFilter === 'YES' || sideFilter === 'NO' ? sideFilter : null;
+  if (!want) return src;
+  const sideOk = t => (t.side || 'NO') === want;
+  const positions = (src.positions || []).filter(sideOk);
+  const closed = (src.closed_trades || []).filter(sideOk);
+  return Object.assign({}, src, {
+    positions,
+    closed_trades: closed,
+    total_pnl: closed.reduce((a, t) => a + (Number(t.pnl) || 0), 0),
+    entries: positions.length + closed.length,
+  });
+}
+
+function getAllNoBook(sideFilter) {
   // Return current ALL NO book state (open positions + closed trades + tallies)
   // The NO book runs in its own ledger: state.all_no['dry'] for paper DRY,
   // state.all_no['dry'] for real-money DRY.
   const mode = state.mode;
-  const book = state.all_no[mode] || { starting_balance: 250, balance: 250, positions: [], closed_trades: [], total_pnl: 0, entries: 0 };
+  const book = bookForSide(state.all_no[mode] || { starting_balance: 250, balance: 250, positions: [], closed_trades: [], total_pnl: 0, entries: 0 }, sideFilter);
   
   // Calculate tallies from closed trades
   const closed = book.closed_trades || [];
@@ -2141,6 +2158,17 @@ async function serveDashboard(route, res) {
   } catch (e) { res.writeHead(500); return res.end('page missing: ' + e.message); }
 }
 
+async function serveYesMarkets(res) {
+  // YES side of the ALL NO book: same white-ledger page, YES rows only
+  // (the page reads /api/no-lanes/book?side=YES).
+  const file = path.join(HERE, 'yes-markets.html');
+  try {
+    const html = fs.readFileSync(file, 'utf8');
+    res.writeHead(200, { 'Content-Type': MIME['.html'], 'Cache-Control': 'no-store' });
+    return res.end(html);
+  } catch (e) { res.writeHead(500); return res.end('page missing: ' + e.message); }
+}
+
 async function serveAllNoMarkets(res) {
   // ALL NO MARKETS: separate white-ledger page with independent book data
   const file = path.join(HERE, 'all-no-markets.html');
@@ -2192,6 +2220,9 @@ async function handle(req, res) {
   }
   if (p === '/all-no-markets') {
     return serveAllNoMarkets(res);
+  }
+  if (p === '/yes-markets') {
+    return serveYesMarkets(res);
   }
   if (/^\/[A-Za-z0-9_.\-]+\.(js|css|png|svg|json)$/.test(p)) {
     const file = path.join(HERE, path.basename(p));
@@ -2286,7 +2317,7 @@ async function handle(req, res) {
   if (p === '/api/no-lanes') return json(res, { no_lanes_enabled: !!state.no_lanes_enabled });
   if (p === '/api/no-lanes/book') {
     // Return ALL NO book: positions, trades, and tallies
-    const bookData = getAllNoBook();
+    const bookData = getAllNoBook(u.searchParams.get('side'));
     return json(res, Object.assign(bookData, { generated_at: new Date().toISOString() }));
   }
   
