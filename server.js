@@ -2303,7 +2303,7 @@ async function handle(req, res) {
     const out = {};
     for (const lane of LANES) {
       const ls = laneState(lane.name);
-      out[lane.name] = { name: lane.name, label: lane.label, running: !!ls.running, mode: state.mode, series: ls.last_series, entries: ls.entries, skips: ls.skips, last_skip: ls.last_skip, last_edge: ls.last_edge, heartbeat: ls.heartbeat };
+      out[lane.name] = { name: lane.name, label: lane.label, running: !!ls.running, mode: state.mode, series: ls.last_series, entries: ls.entries, skips: ls.skips, last_skip: ls.last_skip, last_edge: ls.last_edge, heartbeat: ls.last_tick || ls.heartbeat };
     }
     return json(res, out);
   }
@@ -2384,7 +2384,10 @@ async function handle(req, res) {
     const total = all.length;
     const pages = Math.max(1, Math.ceil(total / per));
     const slice = all.slice((page - 1) * per, page * per);
-    return json(res, { page, pages, total, per_page: per, book, trades: slice });
+    // total_pnl: exact aggregate over the ENTIRE lane book so the tape can do its
+    // math without paging through history. all_no trades (if any ever land here)
+    // are EXCLUDED so book pnl + lanes pnl never double-counts.
+    return json(res, { page, pages, total, per_page: per, book, trades: slice, total_pnl: Number(all.filter((t) => t.strategy !== 'all_no_markets').reduce((a, t) => a + (Number(t.pnl) || 0), 0).toFixed(2)) });
   }
 
   // --- monitoring panels data
@@ -2773,18 +2776,20 @@ async function runAllNoEngine() {
   if (!state.no_lanes_enabled) return;
   const noLs = laneState('all_no_markets');
   if (!noLs || !noLs.running) return;
+  noLs.heartbeat = new Date().toISOString(); // scanner-alive truth every pass
   
   // Operator runtime config wins over code defaults.
   const cfg = Object.assign({}, ALL_NO_CONFIG, state.runtime.all_no || {});
   
   const rows = await noBook();
+  if (!rows.length) noLs.last_skip = 'scan pass: no candidates met the NO gates';
   const book = state.all_no[state.mode];
-  if (!book || book.balance < 5) return;
+  if (!book || book.balance < 5) { noLs.last_skip = 'book balance below $5 floor'; return; }
   
   // Portfolio heat check
   const exposure = book.positions.reduce((a, p) => a + p.cost, 0);
-  if (exposure > book.balance * cfg.max_exposure_pct) return;
-  if (book.positions.length >= cfg.max_concurrent) return;
+  if (exposure > book.balance * cfg.max_exposure_pct) { noLs.last_skip = 'portfolio heat limit'; return; }
+  if (book.positions.length >= cfg.max_concurrent) { noLs.last_skip = 'max concurrent positions'; return; }
   
   for (const r of rows) {
     if (r.edge < cfg.min_edge) continue;
