@@ -631,8 +631,8 @@ function defaultState() {
     min_price: 0.005,
     take_profit: 0.98,
     stop_loss: 0.1,
-    // Trail stop OFF: a trailing exit gave back winners (LIVE: 15 trail exits would have settled +$30 more held). Hard stop_loss stays ON.
-    trail_stop: false,
+    // TRAIL STOP EXTERMINATED (operator law): trail exits sold 86.7%-
+    // would-be-settled winners; the code is DELETED, not gated.
     kelly_cap: 0.95,
     min_hold_sec: 5,
     entry_cooldown_sec: 5,
@@ -1327,8 +1327,7 @@ async function markDryPositions() {
             const heldMs = Date.now() - new Date(pos.opened).getTime();
             if (heldMs < Number(state.runtime.min_hold_sec || 45) * 1000) continue;
 
-            // High-water mark for the trailing stop.
-            if (bid != null && bid > (pos.hwm != null ? pos.hwm : pos.entry_price)) pos.hwm = bid;
+            // (No high-water tracking: the trail stop it fed is exterminated.)
 
             // Time-decay exit at 80% of contract lifetime - LOSERS ONLY.
             // Winners (bid > entry) ride to settlement for the full $1 payout.
@@ -1336,14 +1335,8 @@ async function markDryPositions() {
             const lifePct = totalLifeMs > 0 ? heldMs / totalLifeMs : 1;
             if (lifePct > 0.8 && bid != null && bid <= pos.entry_price) { closeDryPosition(pos, bid, 'time_decay', ''); continue; }
 
-            // Trailing stop: arm only after a real move (max(4c, full edge)) and
-            // then give back only a QUARTER of the peak gain. The old 50% lock cut
-            // winners early that should ride toward settlement.
-            const trailArmed = (pos.hwm != null ? pos.hwm : pos.entry_price) >= pos.entry_price + Math.max(0.04, (pos.edge_at_entry || 0));
-            if (state.runtime.trail_stop === true && trailArmed && bid != null) {
-              const trailStop = pos.entry_price + ((pos.hwm != null ? pos.hwm : bid) - pos.entry_price) * 0.75;
-              if (bid <= trailStop) { closeDryPosition(pos, bid, 'trail_stop', ''); continue; }
-            }
+            // TRAIL STOP: DELETED. The hard stop and take-profit below are the
+            // only price exits; winners ride to settlement.
 
             if (bid != null && bid >= pos.take_profit) closeDryPosition(pos, bid, 'take_profit', '');
             else if (bid != null && bid <= pos.stop_loss) closeDryPosition(pos, bid, 'stop_loss', '');
@@ -2815,7 +2808,6 @@ const ALL_NO_CONFIG = {
   min_vol: 0.0001,
   max_gap: 0.01,
   maker_only: true,
-  trail_pct: 0.5,
   max_hold_pct: 0.75,             // exit at 75% lifetime
   stop_loss_pct: 0.15,            // 15% base stop
   take_profit_mult: 2.5,          // 2.5:1 reward:risk
@@ -3088,9 +3080,19 @@ async function boot() {
   kalshiWS.subscribeOrders();
 
   // Main engine tick - evaluates all lanes every 2 seconds
-  setInterval(async () => {
-    try { await engineTick(); } catch (e) { console.error('[engineTick] Error:', e.message); }
-  }, 2000);
+  // TICK GUARD + DEADLINE (stale-HYPE incident): a hung network await used to
+  // freeze this interval's async body forever, freezing EVERY lane behind it.
+  // Now: (a) one tick in flight at a time, (b) the interval body never waits on
+  // a stalled tick - a 90s deadline abandons it and the loop keeps its cadence.
+  var tickBusy = false;
+  function runTick() {
+    if (tickBusy) return;
+    tickBusy = true;
+    Promise.race([engineTick(), new Promise(r => setTimeout(r, 90000))])
+      .catch(e => console.error('[engineTick] Error:', e.message))
+      .finally(() => { tickBusy = false; });
+  }
+  setInterval(runTick, 2000);
 
   server.listen(PORT, HOST, () => {
     console.log('Kai-Mirror (DRY) listening on http://' + HOST + ':' + PORT + '/');
