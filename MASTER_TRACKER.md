@@ -334,3 +334,42 @@ n=85 is still small - this gate is evidence-backed, not a promise.
   the lab keeps logging the loud-claim zone that calibration proved is fiction.
 - Lab totals are still not evidence: fills are now honest, but queue position is
   still approximated (we assume we were next in line at our level).
+## 2026-11-03 CRASH/BOOT ROOT CAUSE FIX (found, fixed, and TESTED - not theory)
+
+What actually killed the servers (the "SERVER DOWN / boots 23 / lanes 0 on" tape):
+  1. watchdog.ps1 probed /api/health with a 3 SECOND timeout. A merely SLOW
+     server read as DOWN -> kctl restart -> taskkill /F = SIGKILL. SIGKILL runs
+     no handler, so there was NO crash.log entry, and it could tear state.json.
+  2. save() used a raw writeFileSync, so a kill mid-write left a corrupt file.
+  3. loadState() swallowed the parse error and returned defaultState(), so the
+     next boot silently ran on DEFAULT risk: 9 lanes -> 0, and the price floor,
+     fair floor, clip and exposure cap were all gone. That is "lanes 0 on".
+  The watchdog was not saving the machine, it was disarming it.
+
+The permanent fix (both repos, every point verified by test):
+  * state.json is written ATOMICALLY (temp -> fsync -> rename); a rolling
+    state.backup.json keeps the last known good copy.
+  * loadState(): primary -> backup -> FAIL CLOSED. If neither parses, the server
+    boots with safe_mode=true, every lane off, and NO trading (LIVE order
+    placement is hard-blocked in kalshi.js placeOrderV2), and it says so in
+    /api/health (safe_mode, state_source) and in crash.log (BOOT ...).
+  * config.json (NEW, version controlled) holds the operator risk gates and is
+    overlaid on state at every boot, so a torn or deleted state file can never
+    loosen the gates. Edit config.json, commit, restart.
+  * POST /api/shutdown flushes state atomically and exits cleanly. kctl.ps1 now
+    stops servers GRACEFULLY first and force-kills only as a fallback; it also
+    rotates server.log/server.err, because a log still held by a dying process
+    silently killed the new child with an empty error log.
+  * watchdog.ps1 v2: a TCP REFUSED means down; a LISTENING but slow server is
+    alive and is NEVER killed; two consecutive refusals before acting; 5 min
+    cooldown; graceful stop. It never touches lane flags.
+  * crash.log: every line now carries its PID, the exit handler records the
+    STACK that ended the process, and the witness is registered at the very top
+    of the module so an early boot failure cannot escape unrecorded.
+  * ops/watchdog.ps1 and ops/kctl.ps1 are now in git (they used to live only
+    in Temp, where a cleanup would have silently removed the fix).
+
+TESTED by deliberately corrupting state.json: it recovered from the backup with
+all 9 lanes and all gates intact (source=backup); with BOTH copies destroyed it
+came up in safe_mode with trading blocked (source=none) instead of trading on
+defaults - and it stayed up for inspection rather than vanishing.
