@@ -1973,8 +1973,12 @@ function createAllNoEntry(market_id, entry_price, quantity, fair_at_entry, edge,
   }
 
   const cost = Number((entry_price * quantity).toFixed(2));
-  if (book.balance < cost) {
-    return { error: 'Insufficient balance: need ' + cost.toFixed(2) + ', have ' + book.balance.toFixed(2) };
+  // FEE REALISM (2026-11-03): Kalshi charges 0.07*p*(1-p) PER CONTRACT on BOTH legs.
+  // The lab used to charge nothing at entry and 1.75% of proceeds at exit, so paper
+  // results were systematically better than real money (LIVE pays ~2x what DRY booked).
+  const fee_entry = Number((quantity * 0.07 * entry_price * (1 - entry_price)).toFixed(4));
+  if (book.balance < cost + fee_entry) {
+    return { error: 'Insufficient balance: need ' + (cost + fee_entry).toFixed(2) + ', have ' + book.balance.toFixed(2) };
   }
 
   const id = market_id + '-' + Date.now();
@@ -2002,7 +2006,8 @@ function createAllNoEntry(market_id, entry_price, quantity, fair_at_entry, edge,
   };
 
   // DRY book: pure paper ledger. NEVER posts real Kalshi orders.
-  book.balance -= cost;
+  book.balance -= (cost + fee_entry);
+  position.fee_entry = fee_entry;
   book.positions.push(position);
   book.entries++;
   save();
@@ -2020,10 +2025,11 @@ function closeAllNoPosition(position_id, exit_price, exit_reason) {
 
   const pos = book.positions[idx];
   const proceeds = Number((pos.quantity * exit_price).toFixed(2));
-  const pnl = Number((proceeds - pos.cost).toFixed(2));
+  const fee_exit = Number((pos.quantity * 0.07 * exit_price * (1 - exit_price)).toFixed(4));
+  const fee_paid = Number(((pos.fee_entry || 0) + fee_exit).toFixed(4)); // BOTH legs, Kalshi formula
+  const pnl = Number((proceeds - pos.cost - fee_paid).toFixed(2));
   const roi = pos.cost > 0 ? Number(((pnl / pos.cost) * 100).toFixed(1)) : 0;
-  const fee_paid = Number((proceeds * 0.0175).toFixed(3)); // 1.75% maker fee
-  const net_pnl = Number((pnl - fee_paid).toFixed(2));
+  const net_pnl = pnl;
 
   const trade = {
     id: pos.id,
@@ -2049,7 +2055,7 @@ function closeAllNoPosition(position_id, exit_price, exit_reason) {
   // Update book
   book.positions.splice(idx, 1);
   book.closed_trades.push(trade);
-  book.balance += proceeds - fee_paid;
+  book.balance += proceeds - fee_exit;
   book.total_pnl += net_pnl;
   noteClipOutcome(net_pnl);
   save();
