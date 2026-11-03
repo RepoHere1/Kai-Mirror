@@ -2791,6 +2791,16 @@ const server = http.createServer((req, res) => {
 });
 
 // Prevent process exit on unhandled errors
+// CRASH WITNESS (2026-11-03): a silent death looked like 'LIVE loves to fail'.
+// Every exit path now stamps crash.log BEFORE the process goes away.
+try {
+  const APPEND = (line) => fs.appendFileSync(path.join(HERE, 'crash.log'), line + String.fromCharCode(10));
+  process.on('uncaughtException', (e) => { APPEND(new Date().toISOString() + ' UNCAUGHT ' + (e && e.stack ? e.stack : e)); process.exit(1); });
+  process.on('unhandledRejection', (r) => APPEND(new Date().toISOString() + ' REJECTION ' + (r && r.stack ? r.stack : String(r))));
+  process.on('exit', (code) => APPEND(new Date().toISOString() + ' EXIT code=' + code));
+  process.on('SIGTERM', () => { APPEND(new Date().toISOString() + ' SIGTERM'); process.exit(143); });
+  process.on('SIGINT', () => { APPEND(new Date().toISOString() + ' SIGINT'); process.exit(130); });
+} catch (e) { console.error('crash witness init failed', e.message); }
 process.on('uncaughtException', (err) => {
   console.error('Uncaught Exception:', err.stack || err.message || err);
 });
