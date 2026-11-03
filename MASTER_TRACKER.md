@@ -318,3 +318,19 @@ WHY DRY LOOKED PROFITABLE WHILE LIVE LOST - two structural lies in the lab:
 STATUS: LIVE gate live (floor .50 caps .70 fair .62), 0 open positions,
 crash.log witnessing on both servers (it recorded DRY's 04:09 restart).
 n=85 is still small - this gate is evidence-backed, not a promise.
+## Addendum 2026-11-03 late: fill_sim is LIVE in the lab, with corrections
+
+- /api/fill-realism reports intents, filled, unfilled, fill_rate, adverse_pct,
+  avg_wait_ms; counters persist in state.fill_realism. Logs: sim_intent,
+  sim_fill (with adverse flag and the print that hit us), sim_unfilled (reason).
+- Crossing direction is side-aware because Kalshi prints in YES cents: a YES bid
+  fills on a print <= our level; a NO bid fills on a print >= 1 - our level.
+  (My first version had this backwards and produced a fake 0% fill rate.)
+- A volume baseline is taken on the intent's FIRST observed quote, so a fill can
+  never be proved by volume that already existed when the intent was created.
+- First measurement under the corrected rule: 6 intents, 1 fill, and that fill
+  was ADVERSE (100%) - the bid was hit because the market had moved through us.
+- Confidence ceiling: LIVE enforces fair 0.62-0.75; DRY leaves the ceiling OFF so
+  the lab keeps logging the loud-claim zone that calibration proved is fiction.
+- Lab totals are still not evidence: fills are now honest, but queue position is
+  still approximated (we assume we were next in line at our level).

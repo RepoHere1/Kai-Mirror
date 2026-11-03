@@ -35,6 +35,7 @@ const kalshi = require('./kalshi');
 const kilo = require('./kilo');
 const brain = require('./brain_dry');
 const series_kind = require('./series_kind');
+const fillSim = require('./fill_sim');
 const conviction = require('./conviction');
 const quote_stream = require('./quote_stream');
 const { KalshiWS } = require('./kalshi_ws');
@@ -762,6 +763,9 @@ function loadState() {
   } catch (e) { return defaultState(); }
 }
 let state = loadState();
+// The paper book may only book a fill when a REAL public print proves it happened.
+const FILLSIM = fillSim.create({ getState: () => state, log: (k, o) => { try { log(k, o); } catch (e) {} } });
+
 // BOOT COUNTER: every process start bumps this; the tape PULSE prints it so
 // silent watchdog restart loops become visible.
 state.boot_count = (state.boot_count || 0) + 1;
@@ -1815,6 +1819,16 @@ function getAllNoBook(sideFilter) {
   };
 }
 
+// Book the paper fills the simulator confirmed from REAL prints (zero extra API calls).
+function pumpFills(q) {
+  for (const ev of FILLSIM.observe(q)) {
+    if (ev.type !== 'filled' || !ev.intent.book) continue;
+    const a = ev.intent.book;
+    createAllNoEntry(a.market_id, a.entry, a.qty, a.fair, a.edge, a.kelly, a.stop,
+      a.take_profit, a.confidence, a.expiration, a.extra);
+  }
+}
+
 async function noBook() {
   // DIVERGENCE POLICY: Mirror is the LAB - keep gates loose (cluster=2, no
   // price floor, HYPE live) to generate statistics. LIVE is the product with
@@ -1827,6 +1841,7 @@ async function noBook() {
   for (const s of allSeries) {
     const res = await marketsForSeries(s, 12); // deeper scan
     for (const q of res.markets || []) {
+      pumpFills(q);
       if (q.status === 'finalized' || q.result) continue;
       if (!q.strike || !q.close_time) continue;
       
@@ -1869,6 +1884,10 @@ async function noBook() {
         // more probability margin there.
         const fairFloor = asset === 'HYPE-USD' ? Math.max(anCfg.min_fair, 0.58) : anCfg.min_fair;
         if (fairSide < fairFloor) return;                   // probability floor
+        // CONFIDENCE CEILING (2026-11-03 calibration): the model's loudest claims
+        // were its worst - LIVE fair .80+ won 50%, .55-.60 won 0/8, .62-.75 won 72.5%.
+        // max_fair unset = 9.99 = ceiling disabled, so the lab keeps sampling this zone.
+        if (fairSide > (anCfg.max_fair != null ? anCfg.max_fair : 9.99)) return;
         if (bid > cap) return;                              // price cap (cheap only)
         if (bid < (anCfg.min_entry_price || 0)) return;     // no sub-floor lottery tickets
         // MOMENTUM CONFIRMATION: the gaussian model knows only distance from
@@ -2316,6 +2335,7 @@ async function handle(req, res) {
     return json(res, { no_lanes_enabled: state.no_lanes_enabled });
   }
   if (p === '/api/no-lanes') return json(res, { no_lanes_enabled: !!state.no_lanes_enabled });
+  if (p === '/api/fill-realism') return json(res, FILLSIM.stats());
   if (p === '/api/no-lanes/book') {
     // Return ALL NO book: positions, trades, and tallies
     const bookData = getAllNoBook(u.searchParams.get('side'));
@@ -2865,6 +2885,7 @@ async function runAllNoEngine() {
     // Probability floor + price cap (defense in depth; noBook already filters).
     // YES-TWIN rows use their own cap (max_yes_price).
     if (r.fair < (cfg.min_fair != null ? cfg.min_fair : 0.65)) continue;
+    if (r.fair > (cfg.max_fair != null ? cfg.max_fair : 9.99)) continue; // confidence ceiling (off in the lab)
     const sideCap = r.side === 'YES' ? (cfg.max_yes_price != null ? cfg.max_yes_price : (cfg.max_no_price != null ? cfg.max_no_price : 0.35)) : (cfg.max_no_price != null ? cfg.max_no_price : 0.35);
     if (r.limit_entry > sideCap) continue;
     // ANTI-STACK: one position per market - UNLESS the Conviction Press has
@@ -2894,9 +2915,21 @@ async function runAllNoEngine() {
     const cost = qty * entry;
     if (cost > book.balance) continue;
     
-    await createAllNoEntry(r.market_id, entry, qty, r.fair, r.edge, r.kelly,
-      r.stop, r.take_profit, r.confidence, r.expiration,
-      { strike: r.strike, sigma: r.sigma, spot_product: r.spot_product, side: r.side });
+    if (state.runtime.all_no && state.runtime.all_no.simulate_fills === false) {
+      await createAllNoEntry(r.market_id, entry, qty, r.fair, r.edge, r.kelly,
+        r.stop, r.take_profit, r.confidence, r.expiration,
+        { strike: r.strike, sigma: r.sigma, spot_product: r.spot_product, side: r.side });
+    } else {
+      // THE LAB NO LONGER BOOKS ITS OWN WISHES. Register a maker intent; only a
+      // real print at/below our bid inside the TTL turns it into a position.
+      FILLSIM.intent({
+        ticker: r.market_id, side: r.side || 'NO', bid: entry, qty: qty,
+        ttl_ms: (cfg.fill_ttl_sec || 45) * 1000,
+        book: { market_id: r.market_id, entry, qty, fair: r.fair, edge: r.edge, kelly: r.kelly,
+          stop: r.stop, take_profit: r.take_profit, confidence: r.confidence,
+          expiration: r.expiration, extra: { strike: r.strike, sigma: r.sigma, spot_product: r.spot_product, side: r.side } },
+      });
+    }
     
     if (book.positions.length >= cfg.max_concurrent) break;
   }
@@ -2913,6 +2946,7 @@ async function runAllNoExits() {
     if (pos.status !== 'resting') continue;
     
     const q = await quoteForTicker(pos.market_id);
+    pumpFills(q);
     
     // SETTLEMENT: book the real Kalshi result at $1/$0. Without this the
     // position zombied forever once the market finalized (no_bid == null).
