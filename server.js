@@ -1765,7 +1765,7 @@ function getAllNoBook(sideFilter) {
       quantity: p.quantity,
       cost: Number(p.cost.toFixed(2)),
       entry_fair: p.fair_at_entry || 0.5,
-      edge: Number((p.edge_at_entry || 0).toFixed(3)),
+      edge: (p.edge_at_entry != null ? Number(p.edge_at_entry.toFixed(3)) : (p.fair_at_entry != null && p.entry_price != null ? Number((p.fair_at_entry - p.entry_price).toFixed(4)) : 0)),
       kelly: Number((p.kelly_fraction || 0).toFixed(3)),
       stop_loss: p.stop_loss,
       take_profit: p.take_profit,
