@@ -147,7 +147,14 @@ async function raw(acctName, method, route, opts) {
   let lastErr = null;
   for (const st of strategiesToTry) {
     const ts = Math.floor(Date.now() / 1000).toString();
-    const headers = {
+    // 2026-11-04: Kalshi market data (/markets, /series, /events...) is PUBLIC -
+    // unsigned GETs return 200 (verified live). Signing public reads ties every
+    // quote to the signing key's 429 penalty (LIVE starved all lanes this way);
+    // public reads stay decoupled from any key throttle. /portfolio/* stays signed.
+    const isPublicRead = method === 'GET' && /^(\/markets|\/series|\/events|\/calendar|\/exchange|\/tags)/.test(route);
+    const headers = isPublicRead ? {
+      'Accept': 'application/json',
+    } : {
       'KALSHI-ACCESS-KEY': acct.keyId,
       'KALSHI-ACCESS-SIGNATURE': sign(acct, method, st.withQuery ? fullPath : pathNoQuery, ts, st.scheme),
       'KALSHI-ACCESS-TIMESTAMP': ts,

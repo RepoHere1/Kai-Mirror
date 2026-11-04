@@ -1164,7 +1164,13 @@ function syntheticQuote(q, fair) {
 
 async function activeQuote(lane) {
     const staticSeries = (lane.seriesList || [lane.series]).filter(Boolean);
-  const discSeries = await series_kind.resolveFresh(lane.name);
+  // 2026-11-04 STARVATION KILL (parity with LIVE): series discovery is raced
+  // with a 4s deadline and falls through to the static series list. A crawling
+  // sweep must never freeze a lane tick (LIVE lost lanes 2-8 for a day to this).
+  const discSeries = await Promise.race([
+    series_kind.resolveFresh(lane.name),
+    new Promise((r) => setTimeout(() => r(null), 4000)),
+  ]);
   if (discSeries && !staticSeries.includes(discSeries.series)) staticSeries.push(discSeries.series);
   for (const series of staticSeries) {
     // 2026-11-04: Kalshi's default /markets sort returns the TOP strikes of a
