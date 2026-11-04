@@ -34,6 +34,7 @@ const sqlite3 = require('sqlite3').verbose();
 const kalshi = require('./kalshi');
 const kilo = require('./kilo');
 const brain = require('./brain_dry');
+const perp = require('./perp_feed');
 const series_kind = require('./series_kind');
 const fillSim = require('./fill_sim');
 const conviction = require('./conviction');
@@ -1609,7 +1610,8 @@ async function engineTick() {
     const result = brain.evaluate({
       q, spotPrice: s.price, strike: q.strike, tau, perSecVol: perSec,
       volWindow, fills, history: ls.price_history || [],
-      quotes: allQuotes, weights: state.signal_weights
+      quotes: allQuotes, weights: state.signal_weights,
+      perpTilt: perp.biasFor(lane.spot).bias
     });
 
     ls.last_edge = result.edge || 0;
@@ -2098,7 +2100,14 @@ async function noBook() {
       if (tau < 30 || tau > 3600) continue; // only 30s-1hr contracts
       
       let fair = 0.5;
-      if (perSec && tau > 20) fair = 1 - normCdf(Math.log(sp.price / q.strike) / (perSec * Math.sqrt(tau)));
+      if (perSec && tau > 20) {
+        // PERP TILT (2026-11-04): Hyperliquid funding/premium/OI bias for this
+        // asset becomes a drift term, capped at 0.5*sigma*sqrt(tau) - the
+        // driftless gaussian was blind to derivatives positioning.
+        const perpB = perp.biasFor(asset);
+        const muTilt = (Number.isFinite(perpB.bias) ? perpB.bias : 0) * 0.5 * perSec * Math.sqrt(tau);
+        fair = 1 - normCdf((Math.log(sp.price / q.strike) + muTilt) / (perSec * Math.sqrt(tau)));
+      }
       
       // Strict fair value bounds
       if (fair < 0.1 || fair > 0.9) continue;
@@ -3078,6 +3087,7 @@ async function handle(req, res) {
     });
     return json(res, { ...result, lane: lane.name, series: act.series, quote: q, weights: state.signal_weights });
   }
+  if (p === '/api/perp') return json(res, perp.snapshot());
   res.writeHead(404, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify({ error: 'no route ' + p }));
 }
@@ -3522,6 +3532,10 @@ async function boot() {
   } catch (e) {
     console.error('[boot] warmCache failed:', e.message);
   }
+
+  // Perp sentiment feed: Hyperliquid funding/premium/OI -> brain drift tilt
+  perp.start();
+  console.log('[boot] perp_feed started');
 
   // Coinbase WebSocket for real-time spot prices (replaces 2s HTTP polling)
   const spotProducts = ['BTC-USD', 'ETH-USD', 'XRP-USD', 'HYPE-USD'];
