@@ -747,8 +747,8 @@ function defaultState() {
     runtime: { 
     clip: 15,
     min_edge: 0.0003,
-    max_price: 0.99,
-    min_price: 0.005,
+    max_price: 0.50, // EVIDENCE ZONE 2026-11-04 (was 0.99)
+    min_price: 0.30, // EVIDENCE ZONE 2026-11-04 (was 0.005)
     take_profit: null,   // DEAD (operator order, 2026-11-03): winners ride to settlement
     stop_loss: 0.1,
     // TRAIL STOP EXTERMINATED (operator law): trail exits sold 86.7%-
@@ -777,7 +777,7 @@ function defaultState() {
     btc_updown: {
       asset: 'BTC', series: 'KXBTC15M', horizon: '15m',
       min_edge: 0.0005, min_confidence: 0.15, entry_cooldown_sec: 20,
-      max_price: 0.95, min_price: 0.02, kelly_cap: 0.5,
+      max_price: 0.50, min_price: 0.30, kelly_cap: 0.5, // EVIDENCE ZONE 2026-11-04: n=1983, <$0.50 +$132 / >=$0.50 -$72
       preferred_signals: ['order_flow', 'vol_rp', 'black_scholes', 'imbalance'],
       regime_avoid: ['wide_spread', 'arbitrage'],
       description: 'BTC 15-min Up/Down - highest volume, tightest spreads. Fast mean-reversion.',
@@ -785,7 +785,7 @@ function defaultState() {
     eth_updown: {
       asset: 'ETH', series: 'KXETH15M', horizon: '15m',
       min_edge: 0.0005, min_confidence: 0.15, entry_cooldown_sec: 20,
-      max_price: 0.95, min_price: 0.02, kelly_cap: 0.5,
+      max_price: 0.50, min_price: 0.30, kelly_cap: 0.5, // EVIDENCE ZONE 2026-11-04: n=1983, <$0.50 +$132 / >=$0.50 -$72
       preferred_signals: ['order_flow', 'funding_carry', 'black_scholes', 'imbalance'],
       regime_avoid: ['wide_spread', 'arbitrage'],
       description: 'ETH 15-min Up/Down - strong volume, funding carry matters.',
@@ -793,7 +793,7 @@ function defaultState() {
     xrp_updown: {
       asset: 'XRP', series: 'KXXRP15M', horizon: '15m',
       min_edge: 0.0008, min_confidence: 0.18, entry_cooldown_sec: 30,
-      max_price: 0.95, min_price: 0.02, kelly_cap: 0.45,
+      max_price: 0.50, min_price: 0.30, kelly_cap: 0.45, // EVIDENCE ZONE 2026-11-04
       preferred_signals: ['vol_rp', 'term_struct', 'black_scholes', 'imbalance'],
       regime_avoid: ['wide_spread', 'arbitrage'],
       description: 'XRP 15-min Up/Down - lower liquidity, wider spreads.',
@@ -801,7 +801,7 @@ function defaultState() {
     btc_1h_updown: {
       asset: 'BTC', series: 'KXBTCD', horizon: '1d',
       min_edge: 0.0005, min_confidence: 0.12, entry_cooldown_sec: 120,
-      max_price: 0.95, min_price: 0.02, kelly_cap: 0.5,
+      max_price: 0.50, min_price: 0.30, kelly_cap: 0.5, // EVIDENCE ZONE 2026-11-04: n=1983, <$0.50 +$132 / >=$0.50 -$72
       preferred_signals: ['settlement_alpha', 'term_struct', 'black_scholes', 'cross_expiry'],
       regime_avoid: ['arbitrage'],
       description: 'BTC Daily Ladder - long horizon to settlement. Settlement alpha (CF BRTI vs spot) dominates final hour.',
@@ -809,7 +809,7 @@ function defaultState() {
     eth_1h_updown: {
       asset: 'ETH', series: 'KXETHD', horizon: '1d',
       min_edge: 0.0005, min_confidence: 0.15, entry_cooldown_sec: 120,
-      max_price: 0.95, min_price: 0.02, kelly_cap: 0.5,
+      max_price: 0.50, min_price: 0.30, kelly_cap: 0.5, // EVIDENCE ZONE 2026-11-04: n=1983, <$0.50 +$132 / >=$0.50 -$72
       preferred_signals: ['settlement_alpha', 'funding_carry', 'term_struct', 'black_scholes'],
       regime_avoid: ['arbitrage'],
       description: 'ETH Daily Ladder - settlement alpha + funding carry (ETH basis).',
@@ -817,7 +817,7 @@ function defaultState() {
     xrp_1h_updown: {
       asset: 'XRP', series: 'KXXRPD', horizon: '1d',
       min_edge: 0.0008, min_confidence: 0.18, entry_cooldown_sec: 150,
-      max_price: 0.95, min_price: 0.02, kelly_cap: 0.45,
+      max_price: 0.50, min_price: 0.30, kelly_cap: 0.45, // EVIDENCE ZONE 2026-11-04
       preferred_signals: ['settlement_alpha', 'term_struct', 'black_scholes', 'cross_expiry'],
       regime_avoid: ['arbitrage'],
       description: 'XRP Daily Ladder - settlement alpha across expiries.',
@@ -825,7 +825,7 @@ function defaultState() {
     hyperliquid_updown: {
       asset: 'HYPE', series: 'KXHYPE15M', horizon: '15m',
       min_edge: 0.0005, min_confidence: 0.15, entry_cooldown_sec: 20,
-      max_price: 0.95, min_price: 0.02, kelly_cap: 0.5,
+      max_price: 0.50, min_price: 0.30, kelly_cap: 0.5, // EVIDENCE ZONE 2026-11-04: n=1983, <$0.50 +$132 / >=$0.50 -$72
       preferred_signals: ['order_flow', 'vol_rp', 'black_scholes', 'imbalance'],
       regime_avoid: ['wide_spread', 'arbitrage'],
       description: 'HYPE 15-min Up/Down - newer asset, volatility-driven.',
@@ -833,7 +833,7 @@ function defaultState() {
     hyperliquid_1h_updown: {
       asset: 'HYPE', series: 'KXHYPE', horizon: '1h',
       min_edge: 0.0005, min_confidence: 0.15, entry_cooldown_sec: 60,
-      max_price: 0.95, min_price: 0.02, kelly_cap: 0.5,
+      max_price: 0.50, min_price: 0.30, kelly_cap: 0.5, // EVIDENCE ZONE 2026-11-04: n=1983, <$0.50 +$132 / >=$0.50 -$72
       preferred_signals: ['order_flow', 'vol_rp', 'term_struct', 'black_scholes'],
       regime_avoid: ['arbitrage'],
       description: 'HYPE 1-Hour Up/Down - hourly contracts.',
@@ -845,8 +845,8 @@ function defaultState() {
       min_edge: 0.002,
       min_confidence: 0.15,
       entry_cooldown_sec: 3,
-      max_price: 0.98,
-      min_price: 0.005,
+      max_price: 0.50, // EVIDENCE ZONE 2026-11-04
+      min_price: 0.30, // EVIDENCE ZONE 2026-11-04
       kelly_cap: 0.6,
       preferred_signals: ['black_scholes', 'vol_rp', 'term_struct'],
       regime_avoid: ['wide_spread'],
@@ -1351,6 +1351,15 @@ function openDryPosition(lane, q, side, price, fair, edge, sigma) {
   const cap = effectiveClip();
   const qty = Math.floor(cap / price);
   if (qty < 1) { const ls = laneState(lane.name); ls.skips++; ls.last_skip = 'price $' + price.toFixed(2) + ' > order cap $' + cap.toFixed(2) + ' (no contract fits)'; return null; }
+  // CROSS-LANE ANTI-STACK + CLUSTER CAP (2026-11-04 operator order: lanes
+  // trade the evidence zone like all_no). Lanes used to check only their own
+  // book - 4 lanes stacked one market and died together. The dry book obeys
+  // the same booking-site law as createAllNoEntry: max 2 per market, max 2
+  // per settlement round. No caller can bypass this.
+  const sameMkt = state.dry.positions.filter(p => p.market_id === q.ticker).length;
+  if (sameMkt >= 2) { const lsm = laneState(lane.name); lsm.skips++; lsm.last_skip = 'anti-stack: ' + sameMkt + ' positions already in ' + q.ticker; return null; }
+  const sameRound = state.dry.positions.filter(p => p.close_time && p.close_time === q.close_time).length;
+  if (q.close_time && sameRound >= 2) { const lsr = laneState(lane.name); lsr.skips++; lsr.last_skip = 'cluster cap: ' + sameRound + ' positions already settle this round'; return null; }
   const cost = Number((qty * price).toFixed(4));
   if (dryCash() < cost) { const ls = laneState(lane.name); ls.skips++; ls.last_skip = 'insufficient dry cash'; return null; }
   const stop = Number((price * (1 - state.runtime.stop_loss)).toFixed(3));
