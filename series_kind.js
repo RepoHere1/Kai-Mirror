@@ -75,7 +75,8 @@ async function refreshCatalog(coin) {
       for (let page = 0; page < 3; page++) {
         const query = { limit: 1000, category: 'Crypto' };
         if (cursor) query.cursor = cursor;
-        const d = await kalshi.raw('dry', 'GET', '/series', { query });
+        const r = await kalshi.get('/series', { query, ttlMs: 1500 });
+        const d = r.data;   // 2026-11-04: unsigned public read (shared-key fix)
         const ss = (d && d.series) || [];
         out.push(...ss.map(s => s.ticker).filter(Boolean));
         cursor = (d && d.cursor) || '';
@@ -116,7 +117,8 @@ async function marketsFor(series) {
   if (hit && Date.now() - hit.at < SERIES_CACHE_TTL_MS) return hit.markets;
   let markets = [];
   try {
-    const d = await kalshi.raw('dry', 'GET', '/markets', { query: { limit: 20, status: 'open', series_ticker: series } });
+    const r = await kalshi.get('/markets', { query: { limit: 20, status: 'open', series_ticker: series }, ttlMs: 1500 });
+    const d = r.data;   // 2026-11-04: unsigned public read (shared-key fix)
     markets = (d && d.markets) || [];
   } catch (e) { markets = (hit && hit.markets) || []; }
   seriesCache.set(series, { at: Date.now(), markets });

@@ -2169,7 +2169,11 @@ async function getAllTradableSeries() {
   // Bounded scan: the crypto lane series always, then the most liquid open series, max 30.
   // An unbounded scan made hundreds of rate-limited Kalshi calls per pass and never finished.
   try {
-    const data = await kalshi.raw('dry', 'GET', '/markets', { query: { status: 'open', limit: 500 } });
+    // 2026-11-04 shared-key fix: go through kalshi.get() so this heavy
+    // /markets?limit=500 scan is an UNSIGNED public read (per-IP budget),
+    // not a signed live-key call every scan pass.
+    const r = await kalshi.get('/markets', { query: { status: 'open', limit: 500 }, ttlMs: 1500 });
+    const data = r.data;
     const bySeries = new Map();
     for (const m of data.markets || []) {
       const s = m.series_ticker || String(m.ticker || '').split('-')[0];
