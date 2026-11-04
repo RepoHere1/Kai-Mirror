@@ -1344,7 +1344,13 @@ function dryAccountPayload() {
 }
 
 function openDryPosition(lane, q, side, price, fair, edge, sigma) {
-  const qty = Math.max(1, Math.floor(effectiveClip() / price));
+  // OPERATOR ORDER 2026-11-04: every order is at most $0.50. The old
+  // Math.max(1, Math.floor(clip/price)) forced qty=1 whenever the price ALONE
+  // exceeded the cap - that is exactly how a $0.61 KXBTC15M YES slipped through
+  // on 2026-11-04. If no whole contract fits the cap, we SKIP, never force.
+  const cap = effectiveClip();
+  const qty = Math.floor(cap / price);
+  if (qty < 1) { const ls = laneState(lane.name); ls.skips++; ls.last_skip = 'price $' + price.toFixed(2) + ' > order cap $' + cap.toFixed(2) + ' (no contract fits)'; return null; }
   const cost = Number((qty * price).toFixed(4));
   if (dryCash() < cost) { const ls = laneState(lane.name); ls.skips++; ls.last_skip = 'insufficient dry cash'; return null; }
   const stop = Number((price * (1 - state.runtime.stop_loss)).toFixed(3));
@@ -2125,7 +2131,12 @@ async function noBook() {
         if (e > (anCfg.max_edge != null ? anCfg.max_edge : 0.18)) return;
         const kelly = Math.max(0, e / (1 - bid));
         const kellyCapped = Math.min(0.25, kelly);          // cap at 25% Kelly
-        const q2 = Math.max(1, Math.floor(5 * kellyCapped / Math.max(0.01, bid)));
+        // OPERATOR ORDER 2026-11-04: every order ≤ $0.50. The Kelly notional
+        // (hardcoded $5 before) is now min(effectiveClip(), 5*kelly), and if
+        // even one contract doesn't fit that budget the row is DROPPED. The old
+        // Math.max(1, ...) forced a $0.61 YES through on KXBTC15M (2026-11-04).
+        const qBudget = Math.min(effectiveClip(), 5 * kellyCapped);
+        const q2 = Math.floor(qBudget / Math.max(0.01, bid));
         if (q2 < 1) return;
         rows.push({
           id: q.ticker,
@@ -3356,7 +3367,10 @@ async function runAllNoEngine() {
     // Use pre-calculated values from noBook
     const entry = r.limit_entry; // maker at bid
     // Conviction Press earns bigger size only from settled-trade evidence.
-    const qty = Math.max(1, Math.floor(r.qty * press.level));
+    let qty = Math.floor(r.qty * press.level);
+    // OPERATOR ORDER 2026-11-04: final clamp - press scaling may not lift any
+    // order above the $0.50 cap. No contract fits -> skip, never force qty=1.
+    qty = Math.min(qty, Math.floor(effectiveClip() / Math.max(0.01, entry)));
     if (qty < 1) continue;
     
     const cost = qty * entry;
