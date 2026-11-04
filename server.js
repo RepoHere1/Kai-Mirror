@@ -26,7 +26,7 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const { execFileSync } = require('child_process');
+const { execFile, execFileSync } = require('child_process');
 const WebSocket = require('ws');
 
 
@@ -37,6 +37,7 @@ const brain = require('./brain_dry');
 const series_kind = require('./series_kind');
 const fillSim = require('./fill_sim');
 const conviction = require('./conviction');
+const certainty = require('./certainty');
 const quote_stream = require('./quote_stream');
 const dataFacts = require('./data_facts');
 const { KalshiWS } = require('./kalshi_ws');
@@ -112,6 +113,64 @@ setInterval(() => {
 // ===========================================================================
 const DB_FILE = path.join(HERE, 'trading.db');
 const db = new sqlite3.Database(DB_FILE);
+// SQLITE BUSY HANDLING (2026-11-03). node-sqlite3 reports an async write
+// failure (SQLITE_BUSY: database is locked) by EMITTING an 'error' event on
+// the Database object. With no listener, Node promotes that to an uncaught
+// exception, and the crash witness above calls process.exit(1) - so ONE
+// transient lock on trading.db killed the entire server. That is exactly how
+// Kai-LIVE died at 21:20:22 on 2026-11-03.
+//
+// PROVEN MECHANISM (node_modules/sqlite3/src/statement.cc + lib/sqlite3.js):
+// the event is emitted on the STATEMENT object, NOT on the Database. A
+// db-level `db.on('error')` handler therefore does NOT catch it. BOTH are
+// required:
+//   1. busyTimeout - a blocked writer WAITS for the lock instead of failing
+//      fast. Must be configured BEFORE the first statement runs.
+//   2. a callback on EVERY statement - a residual failure is delivered to the
+//      caller instead of becoming an unhandled 'error' event.
+// The proof lives in test_sqlite_busy.js.
+db.configure('busyTimeout', 5000);
+
+function dbLogError(scope, err) {
+  const detail = err && err.message ? err.message : String(err);
+  // Do not depend on `state` here: it is in the temporal dead zone until
+  // loadState() runs, so the detail goes straight to crash.log.
+  try {
+    fs.appendFileSync(path.join(HERE, 'crash.log'),
+      new Date().toISOString() + ' pid=' + process.pid + ' DB_ERROR ' + scope + ' ' + detail + String.fromCharCode(10));
+  } catch (e) { }
+  try { console.error('[db] ' + scope + ':', detail); } catch (e) { }
+}
+
+db.on('error', (err) => { dbLogError('trading.db', err); });
+
+// (1) Database-level methods: always carry a callback.
+for (const _m of ['run', 'exec', 'all', 'get', 'each']) {
+  const _orig = db[_m].bind(db);
+  db[_m] = function (sql, ...rest) {
+    if (typeof rest[rest.length - 1] !== 'function') {
+      rest.push((err) => { if (err) dbLogError('db.' + _m, err); });
+    }
+    return _orig(sql, ...rest);
+  };
+}
+
+// (2) Prepared statements: `stmt.run([...])` with no callback is exactly the
+// fatal shape.
+const _origPrepare = db.prepare.bind(db);
+db.prepare = function (sql) {
+  const stmt = _origPrepare(sql);
+  for (const _sm of ['run', 'get', 'all', 'each', 'finalize']) {
+    const _o = stmt[_sm].bind(stmt);
+    stmt[_sm] = function (...a) {
+      if (typeof a[a.length - 1] !== 'function') {
+        a.push((err) => { if (err) dbLogError('stmt.' + _sm, err); });
+      }
+      return _o(...a);
+    };
+  }
+  return stmt;
+};
 
 // Initialize schema with proper indexes
 db.serialize(() => {
@@ -156,6 +215,17 @@ db.serialize(() => {
   db.run(`CREATE INDEX IF NOT EXISTS idx_trades_side ON trades(side)`);
   db.run(`CREATE INDEX IF NOT EXISTS idx_trades_pnl ON trades(pnl)`);
   db.run(`CREATE INDEX IF NOT EXISTS idx_trades_strategy_time ON trades(strategy, exit_timestamp)`);
+
+  // FEE COLUMNS (2026-11-03). The fee is real money that left the account;
+  // without it persisted, the ledger cannot be reconciled against the account
+  // statement. Existing databases are migrated in place.
+  db.all("PRAGMA table_info(trades)", (e0, cols) => {
+    if (e0 || !cols) return;
+    const have = new Set(cols.map(c => c.name));
+    for (const c of ['fee_paid', 'fee_entry', 'fee_exit']) {
+      if (!have.has(c)) db.run(`ALTER TABLE trades ADD COLUMN ${c} REAL`, (e1) => { if (e1) console.error('[db] migrate ' + c + ' failed:', e1.message); });
+    }
+  });
 
   // Positions table - open positions
   db.run(`CREATE TABLE IF NOT EXISTS positions (
@@ -298,8 +368,9 @@ async function persistTrade(trade) {
       cost_basis, proceeds, pnl, exit_reason, result, hold_seconds,
       exit_timestamp, opened, bid_at_entry, ask_at_entry, fill_quality,
       settled_price, settlement_source, fair_at_entry, edge_at_entry,
-      kelly_fraction, sigma_per_sec, strike, horizon, regime, signal_source
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      kelly_fraction, sigma_per_sec, strike, horizon, regime, signal_source,
+      fee_paid, fee_entry, fee_exit
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       trade.market_id, trade.title, trade.side, trade.strategy,
       trade.entry_price, trade.exit_price, trade.quantity,
@@ -308,7 +379,13 @@ async function persistTrade(trade) {
       trade.opened, trade.bid_at_entry, trade.ask_at_entry, trade.fill_quality,
       trade.settled_price, trade.settlement_source, trade.fair_at_entry,
       trade.edge_at_entry, trade.kelly_fraction, trade.sigma_per_sec,
-      trade.strike, trade.horizon, trade.regime, trade.reason?.split('_')[0]
+      trade.strike, trade.horizon, trade.regime, trade.reason?.split('_')[0],
+      // The fee actually paid. LIVE trades carry `fees`; the DRY paper book
+      // carries `fee_paid`. Persist whichever is present so the ledger and the
+      // account can be reconciled.
+      trade.fees != null ? trade.fees : (trade.fee_paid != null ? trade.fee_paid : null),
+      trade.fee_entry != null ? trade.fee_entry : null,
+      trade.fee_exit != null ? trade.fee_exit : null
     ]);
   } catch (e) { console.error('persistTrade failed:', e.message); }
 }
@@ -561,6 +638,7 @@ const LANES = [
   { name: 'hyperliquid_updown', label: 'Hyperliquid Up/Down', series: 'KXHYPE15M', seriesList: ['KXHYPE15M'], spot: 'HYPE-USD', asset: 'HYPE', horizon: '15m' },
   { name: 'hyperliquid_1h_updown', label: 'Hyperliquid 1-Hour', series: 'KXHYPE', seriesList: ['KXHYPE'], spot: 'HYPE-USD', asset: 'HYPE', horizon: '1h' },
   { name: 'all_no_markets', label: 'ALL NO MARKETS', series: null, seriesList: [], spot: null, asset: null, horizon: 'no-side' },
+  { name: 'certainty', label: 'CERTAINTY (near-expiry, 90%+ win rate)', series: null, seriesList: [], spot: null, asset: null, horizon: 'certainty' },
 ];
 const LANE_BY_NAME = new Map(LANES.map(l => [l.name, l]));
 
@@ -621,18 +699,30 @@ global.OPERATOR_LAW = OPERATOR_LAW;
 //      monitor/supervisor, so the operator's button push can never be undone.
 //      It ONLY kills hostile OS processes - it NEVER writes ls.running.
 // ===========================================================================
+// POPUP + STALL FIX (2026-11-04): the old version ran a BLOCKING
+// execFileSync('powershell') every 3 seconds with no windowsHide. Each run
+// froze the Node event loop for the whole PowerShell start-up + CIM scan, which
+// starved /api/health (the tape then reported SERVER DOWN on a live server),
+// and each run flashed a visible PowerShell console window. Now it is ASYNC,
+// fully HIDDEN, never overlaps itself, and runs every 30s, on boot, and on
+// every operator lane toggle (OPERATOR_LAW is unchanged).
+let _exterminateBusy = false;
 function exterminateSupervisors() {
+  if (_exterminateBusy) return;
+  _exterminateBusy = true;
   const script =
     "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match 'monitor\\.js' -and ($_.Name -eq 'node.exe' -or $_.Name -eq 'bash.exe' -or $_.Name -eq 'timeout.exe') } | ForEach-Object { $_.ProcessId }";
-  let pids = [];
-  try {
-    const out = execFileSync('powershell', ['-NoProfile', '-NonInteractive', '-Command', script],
-      { encoding: 'utf8', timeout: 10000, maxBuffer: 1 << 20, stdio: ['ignore', 'pipe', 'ignore'] });
-    pids = out.split(String.fromCharCode(10, 13)).map(s => s.trim()).filter(s => /^\d+$/.test(s));
-  } catch (e) { return; }
-  for (const pid of pids) {
-    try { execFileSync('taskkill', ['/PID', pid, '/F'], { stdio: 'ignore' }); log('exterminator', { killedPid: pid }); } catch (e) { }
-  }
+  execFile('powershell', ['-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-Command', script],
+    { encoding: 'utf8', timeout: 20000, maxBuffer: 1 << 20, windowsHide: true }, (err, out) => {
+      _exterminateBusy = false;
+      if (err) return;
+      const pids = String(out || '').split(/\r?\n/).map(s => s.trim()).filter(s => /^\d+$/.test(s));
+      for (const pid of pids) {
+        execFile('taskkill', ['/PID', pid, '/F'], { windowsHide: true }, (e2) => {
+          if (!e2) log('exterminator', { killedPid: pid });
+        });
+      }
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -659,7 +749,7 @@ function defaultState() {
     min_edge: 0.0003,
     max_price: 0.99,
     min_price: 0.005,
-    take_profit: 0.98,
+    take_profit: null,   // DEAD (operator order, 2026-11-03): winners ride to settlement
     stop_loss: 0.1,
     // TRAIL STOP EXTERMINATED (operator law): trail exits sold 86.7%-
     // would-be-settled winners; the code is DELETED, not gated.
@@ -1448,8 +1538,11 @@ async function markDryPositions() {
             // TRAIL STOP: DELETED. The hard stop and take-profit below are the
             // only price exits; winners ride to settlement.
 
-            if (bid != null && bid >= pos.take_profit) closeDryPosition(pos, bid, 'take_profit', '');
-            else if (bid != null && bid <= pos.stop_loss) closeDryPosition(pos, bid, 'stop_loss', '');
+            // TAKE PROFIT IS DEAD (operator order, 2026-11-03). Selling a winner
+            // early costs an EXIT FEE and caps the payout below $1.00 - the
+            // same contract settling pays the full dollar with no fee. Only the
+            // hard stop cuts a loser early.
+            if (bid != null && bid <= pos.stop_loss) closeDryPosition(pos, bid, 'stop_loss', '');
     }
   }
 }
@@ -1843,27 +1936,39 @@ function getAllNoBook(sideFilter) {
   // The NO book runs in its own ledger: state.all_no['dry'] for paper DRY,
   // state.all_no['dry'] for real-money DRY.
   const mode = state.mode;
-  const book = bookForSide(state.all_no[mode] || { starting_balance: 250, balance: 250, positions: [], closed_trades: [], total_pnl: 0, entries: 0 }, sideFilter);
+  const rawBook = bookForSide(state.all_no[mode] || { starting_balance: 250, balance: 250, positions: [], closed_trades: [], total_pnl: 0, entries: 0 }, sideFilter);
+  const safeNum = (v, d = 0) => { const x = Number(v); return Number.isFinite(x) ? x : d; };
+  // A missing balance must stay UNKNOWN, not silently become 0.
+  const rawBalanceKnown = rawBook.balance != null && Number.isFinite(Number(rawBook.balance));
   
   // Calculate tallies from closed trades
-  const closed = book.closed_trades || [];
+  const closed = rawBook.closed_trades || [];
   const wins = closed.filter(t => t.pnl > 0).length;
   const losses = closed.filter(t => t.pnl < 0).length;
   const win_rate = closed.length > 0 ? (wins / closed.length) * 100 : 0;
-  const total_fees = closed.reduce((sum, t) => sum + (t.fee_paid || 0), 0);
+  // FEE TOTAL: LIVE trades carry `fees` (the real Kalshi amount); the DRY
+  // paper book carries `fee_paid`. Reading only `fee_paid` made the fee
+  // tally report $0.00 while real money was being paid in fees.
+  const tradeFee = (t) => (t.fees != null ? Number(t.fees) : Number(t.fee_paid || 0));
+  const total_fees = closed.reduce((sum, t) => sum + tradeFee(t), 0);
   const avg_entry = closed.length > 0 ? closed.reduce((sum, t) => sum + t.entry_price, 0) / closed.length : 0;
   
   // Calculate open tally
-  const open = book.positions || [];
+  const open = rawBook.positions || [];
   const open_cost = open.reduce((sum, p) => sum + p.cost, 0);
   const open_sweet = open.filter(p => p.entry_price >= 0.84 && p.entry_price <= 0.92).length;
   
   return {
     book: {
-      balance: Number(book.balance.toFixed(2)),
-      starting: book.starting_balance,
-      pnl: Number(book.total_pnl.toFixed(2)),
-      entries: book.entries,
+      balance: rawBalanceKnown ? Number(Number(rawBook.balance).toFixed(2)) : null,
+      // BALANCE TRUTH: a null balance means "the balance read failed", which is
+      // NOT the same as "the balance is zero". The tape and the dashboards must
+      // be able to tell those apart instead of showing $0.
+      balance_known: rawBalanceKnown,
+      balance_stale: rawBook.balance_stale === true,
+      starting: rawBook.starting_balance,
+      pnl: Number(safeNum(rawBook.total_pnl).toFixed(2)),
+      entries: safeNum(rawBook.entries),
       mode: mode,
     },
     open_rows: (open || []).map(p => ({
@@ -1873,13 +1978,13 @@ function getAllNoBook(sideFilter) {
       side: p.side || 'NO',
       entry_price: p.entry_price,
       quantity: p.quantity,
-      cost: Number(p.cost.toFixed(2)),
+      cost: Number(safeNum(p.cost).toFixed(2)),
       entry_fair: p.fair_at_entry || 0.5,
       edge: (p.edge_at_entry != null ? Number(p.edge_at_entry.toFixed(3)) : (p.fair_at_entry != null && p.entry_price != null ? Number((p.fair_at_entry - p.entry_price).toFixed(4)) : 0)),
-      kelly: Number((p.kelly_fraction || 0).toFixed(3)),
+      kelly: Number(safeNum(p.kelly_fraction).toFixed(3)),
       stop_loss: p.stop_loss,
       take_profit: p.take_profit,
-      confidence: p.confidence || 0,
+      confidence: safeNum(p.confidence),
       expiration: p.expiration,
       status: p.status || 'resting',
       mode: mode,
@@ -1893,13 +1998,13 @@ function getAllNoBook(sideFilter) {
       entry_price: t.entry_price,
       exit_price: t.exit_price,
       quantity: t.quantity,
-      cost: Number(t.cost.toFixed(2)),
-      proceeds: Number(t.proceeds.toFixed(2)),
-      pnl: Number(t.pnl.toFixed(2)),
-      roi: t.quantity > 0 ? Number(((t.pnl / t.cost) * 100).toFixed(1)) : 0,
+      cost: Number(safeNum(t.cost).toFixed(2)),
+      proceeds: Number(safeNum(t.proceeds).toFixed(2)),
+      pnl: Number(safeNum(t.pnl).toFixed(2)),
+      roi: t.quantity > 0 && safeNum(t.cost) > 0 ? Number(((safeNum(t.pnl) / safeNum(t.cost)) * 100).toFixed(1)) : 0,
       entry_fair: t.fair_at_entry || 0.5,
-      kelly: Number((t.kelly_fraction || 0).toFixed(3)),
-      fee_paid: Number((t.fee_paid || 0).toFixed(3)),
+      kelly: Number(safeNum(t.kelly_fraction).toFixed(3)),
+      fee_paid: Number(tradeFee(t).toFixed(3)),
       exit_reason: t.exit_reason,
       mode: mode,
       entry_timestamp: t.opened_at,
@@ -1910,7 +2015,7 @@ function getAllNoBook(sideFilter) {
       wins,
       losses,
       win_rate: Number(win_rate.toFixed(1)),
-      pnl: Number(book.total_pnl.toFixed(2)),
+      pnl: Number(safeNum(rawBook.total_pnl).toFixed(2)),
       fees: Number(total_fees.toFixed(2)),
       avg_entry: avg_entry,
     },
@@ -2034,7 +2139,7 @@ async function noBook() {
           edge: Number(e.toFixed(4)),
           kelly: Number(kellyCapped.toFixed(3)),
           stop: Number((bid * 0.8).toFixed(3)),
-          take_profit: 0.95,
+          take_profit: null,   // DEAD (operator order, 2026-11-03): winners ride to settlement
           confidence: Number(Math.min(1, e / 0.08).toFixed(2)),
           expiration: q.close_time,
           status: 'candidate',
@@ -2089,6 +2194,7 @@ function createAllNoEntry(market_id, entry_price, quantity, fair_at_entry, edge,
   const mode = state.mode;
   const book = state.all_no[mode];
   if (!book) return { error: 'Book not found for mode: ' + mode };
+  const x = extra || {};
 
   // OPERATOR_LAW safety: never let bad market data crash the server (an
   // unhandled rejection here was restart-looping the process). Skip instead.
@@ -2106,17 +2212,18 @@ function createAllNoEntry(market_id, entry_price, quantity, fair_at_entry, edge,
   // FEE REALISM (2026-11-03): Kalshi charges 0.07*p*(1-p) PER CONTRACT on BOTH legs.
   // The lab used to charge nothing at entry and 1.75% of proceeds at exit, so paper
   // results were systematically better than real money (LIVE pays ~2x what DRY booked).
-  const fee_entry = Number((quantity * 0.07 * entry_price * (1 - entry_price)).toFixed(4));
+  const fee_entry = x.fee_entry_override != null
+    ? Number(x.fee_entry_override)   // the certainty lane books the REAL per-contract fee (rounded up to the cent)
+    : Number((quantity * 0.07 * entry_price * (1 - entry_price)).toFixed(4));
   if (book.balance < cost + fee_entry) {
     return { error: 'Insufficient balance: need ' + (cost + fee_entry).toFixed(2) + ', have ' + book.balance.toFixed(2) };
   }
 
   const id = market_id + '-' + Date.now();
-  const x = extra || {};
   const position = {
     id,
     market_id,
-    strategy: 'all_no_markets',
+    strategy: x.strategy || 'all_no_markets',
     side: x.side || 'NO',
     spot: x.spot_product || null,
     strike: x.strike != null ? x.strike : null,
@@ -2177,6 +2284,8 @@ function closeAllNoPosition(position_id, exit_price, exit_reason) {
     edge_at_entry: pos.edge_at_entry != null ? pos.edge_at_entry : null,
     kelly_fraction: pos.kelly_fraction != null ? pos.kelly_fraction : null,
     fee_paid,
+    fee_entry: pos.fee_entry || 0,
+    fee_exit,
     exit_reason,
     opened_at: pos.opened_at,
     closed_at: new Date().toISOString(),
@@ -2185,6 +2294,17 @@ function closeAllNoPosition(position_id, exit_price, exit_reason) {
   // Update book
   book.positions.splice(idx, 1);
   book.closed_trades.push(trade);
+  // THE CERTAINTY LEDGER: settle the claim the lane made at entry, so the lane
+  // measures its own win rate instead of asserting one.
+  if (pos.strategy === 'certainty' && FACTS && FACTS.certaintyOutcome) {
+    try {
+      FACTS.certaintyOutcome({
+        ticker: pos.market_id, side: pos.side,
+        won: exit_price > (pos.entry_price || 0), pnl: net_pnl,
+        prob: pos.fair_at_entry, price: pos.entry_price,
+      });
+    } catch (e) { }
+  }
   book.balance += proceeds - fee_exit;
   book.total_pnl += net_pnl;
   noteClipOutcome(net_pnl);
@@ -2375,6 +2495,15 @@ async function handle(req, res) {
   }
 
   if (p === '/api/data-health') return json(res, FACTS.health());
+  if (p === '/api/certainty-scan') {
+    // READ ONLY: what the certainty lane sees right now, and exactly what it
+    // would trade and why. This is the validator - it never places an order.
+    const scan = await scanCertaintyCandidates();
+    return json(res, Object.assign(scan, { lane: laneState('certainty') }));
+  }
+  if (p === '/api/certainty') {
+    return json(res, await FACTS.certaintyStats());
+  }
   if (p === '/api/facts') {
     const mm = /[?&]minutes=(\d+)/.exec(req.url || '');
     const rows = await FACTS.recent(mm ? Number(mm[1]) : 10, 300);
@@ -2468,6 +2597,36 @@ async function handle(req, res) {
     // Return ALL NO book: positions, trades, and tallies
     const bookData = getAllNoBook(u.searchParams.get('side'));
     return json(res, Object.assign(bookData, { generated_at: new Date().toISOString() }));
+  }
+
+  // ONE ATOMIC SNAPSHOT for the tape. The tape used to poll three endpoints
+  // separately, so a trade that closed between two of those calls appeared in
+  // one view and not the other: the tape printed a CLOSE with a balance that
+  // had already moved on. One snapshot = one consistent truth.
+  if (p === '/api/tape-snapshot') {
+    const bookData = getAllNoBook(u.searchParams.get('side'));
+    const per = Math.max(1, Math.min(200, Number(u.searchParams.get('per_page') || 200)));
+    const all = state.dry.closed.slice().reverse();
+    return json(res, {
+      generated_at: new Date().toISOString(),
+      book: bookData,
+      lanes: {
+        page: 1,
+        pages: 1,
+        total: all.length,
+        per_page: per,
+        // Same shape as /api/recent-trades so the tape logic is unchanged.
+        trades: all.slice(0, per),
+        total_pnl: Number(all.filter(t => t.strategy !== 'all_no_markets').reduce((a, t) => a + (Number(t.pnl) || 0), 0).toFixed(2)),
+      },
+      health: {
+        ok: true,
+        pid: process.pid,
+        boots: state.boot_count || 0,
+        mode: state.mode,
+        uptime_sec: Math.round((Date.now() - new Date(state.booted_at).getTime()) / 1000),
+      },
+    });
   }
   
   if (p === '/api/no-lanes/entry' && method === 'POST') {
@@ -2973,6 +3132,172 @@ const ALL_NO_CONFIG = {
   min_confidence: 0.3,            // minimum confidence
 };
 
+// ===========================================================================
+// CERTAINTY LANE (2026-11-03) - PAPER ONLY IN THE LAB
+// ===========================================================================
+// A high win rate is bought with PRICE, not with confidence: a contract that
+// pays 95c needs a 95% win rate to break even. The only zone where "extreme
+// win rate" and "immediate" coexist is a contract whose outcome is already
+// decided by the passage of time - near expiry, with the strike far from
+// spot. certainty.js computes that probability PESSIMISTICALLY (widened vol,
+// index basis haircut, empirical tail) and this lane trades only when the
+// pessimistic probability still beats the book's ask by more than the fee.
+//
+// THE LANE WRITES EVERY CANDIDATE TO THE LEDGER with the probability it
+// claimed and, once the market settles, whether it was right - so it MEASURES
+// its win rate instead of asserting one:
+//   GET /api/certainty       -> calibration (n, wins, win rate, model bias)
+//   GET /api/certainty-scan  -> what the scanner sees right now (read only)
+//
+// IN THE LAB IT NEVER POSTS A REAL ORDER. It fills at the ask, pays the real
+// Kalshi fee, and rides to settlement - exactly what LIVE will do.
+const CERTAINTY_COINS = [
+  { asset: 'BTC-USD', series: 'KXBTC15M' },
+  { asset: 'ETH-USD', series: 'KXETH15M' },
+  { asset: 'XRP-USD', series: 'KXXRP15M' },
+  { asset: 'HYPE-USD', series: 'KXHYPE15M' },
+];
+
+function certaintyCfg() {
+  const cfg = Object.assign({}, certainty.DEFAULTS, state.runtime.certainty || {});
+  // A missing or edited operator file must never LOOSEN the lane.
+  cfg.min_prob = Math.max(cfg.min_prob || 0, 0.90);
+  cfg.min_margin = Math.max(cfg.min_margin || 0, 0.01);
+  cfg.max_qty = Math.max(1, Math.min(cfg.max_qty || 1, 5));
+  cfg.max_price = Math.min(cfg.max_price || 0.97, 0.98);
+  cfg.min_z = Math.max(cfg.min_z || 0, 3.0);
+  return cfg;
+}
+
+// Read-only scan. This function NEVER places an order - it is also the
+// validator: it shows exactly what the lane would trade, and why.
+async function scanCertaintyCandidates(cfgIn) {
+  const cfg = cfgIn || certaintyCfg();
+  const out = { at: new Date().toISOString(), cfg, candidates: [], seen: [], scanned: 0, notes: [] };
+  const coins = (cfg.assets && cfg.assets.length)
+    ? CERTAINTY_COINS.filter(c => cfg.assets.indexOf(c.asset) >= 0)
+    : CERTAINTY_COINS;
+  for (const c of coins) {
+    const s = spot[c.asset];
+    if (!s || !Number.isFinite(s.price)) { out.notes.push(c.asset + ': no spot'); continue; }
+    const perSec = perSecondVol(c.asset, 900);
+    if (!perSec) { out.notes.push(c.asset + ': no realised vol'); continue; }
+    let res = null;
+    try { res = await marketsForSeries(c.series, 40); } catch (e) { out.notes.push(c.series + ': fetch failed'); continue; }
+    const ms = (res && res.markets) || [];
+    if (!ms.length) { out.notes.push(c.series + ': no markets'); continue; }
+    // Only the two soonest expiry windows can ever qualify.
+    const windows = new Map();
+    for (const m of ms) {
+      if (!m.close_time || m.result || m.status === 'finalized') continue;
+      const ct = String(m.close_time);
+      if (!windows.has(ct)) windows.set(ct, []);
+      windows.get(ct).push(m);
+    }
+    for (const ct of Array.from(windows.keys()).sort().slice(0, 2)) {
+      for (const q of windows.get(ct)) {
+        out.scanned++;
+        // An INITIALIZED market has floor_strike 0 - it is not a strike, it is
+        // "not set yet". Trading against it would be nonsense.
+        if (q.strike == null || !(q.strike > 0)) { out.seen.push({ ticker: q.ticker, why: 'strike not set (market not open yet)' }); continue; }
+        const tau = (new Date(q.close_time).getTime() - Date.now()) / 1000;
+        if (tau < cfg.min_tau_sec - 30 || tau > cfg.max_tau_sec + 60) {
+          out.seen.push({ ticker: q.ticker, tau: Math.round(tau), why: 'outside expiry window' });
+          continue;
+        }
+        // Cheap pre-filter on the STRIKE (strikes never move) using the
+        // pessimistic sigma. Only survivors cost a fresh quote.
+        const cp = certainty.certaintyProbability({
+          spot: s.price, strike: q.strike, tauSec: tau, perSecVol: perSec,
+          volMultiplier: cfg.vol_multiplier, basisPct: cfg.basis_pct, points: s.points,
+          settleWindowSec: cfg.settle_window_sec,
+        });
+        if (cp.pYes == null) { out.seen.push({ ticker: q.ticker, tau: Math.round(tau), why: 'uncomputable' }); continue; }
+        if (Math.abs(cp.z) < cfg.min_z - 1) {
+          out.seen.push({ ticker: q.ticker, tau: Math.round(tau), strike: q.strike, spot: s.price,
+            gapPct: cp.gapPct, z: cp.z, why: 'distance to strike too small (z=' + cp.z + ')' });
+          continue;
+        }
+        const qq = await quoteForTicker(q.ticker);
+        if (!qq || qq.facts_ok === false) {
+          out.seen.push({ ticker: q.ticker, tau: Math.round(tau), z: cp.z, why: 'facts refused: ' + (qq ? (qq.facts_verdict || 'no quote') : 'no quote') });
+          continue;
+        }
+        const tau2 = (new Date(qq.close_time).getTime() - Date.now()) / 1000;
+        const cands = certainty.buildCandidates({ q: qq, spot: s.price, tau: tau2, perSecVol: perSec, points: s.points }, cfg);
+        const best = certainty.bestCandidate(cands);
+        if (!best) continue;
+        best.asset = c.asset;
+        best.perSecVol = perSec;
+        best.spot = s.price;
+        out.candidates.push(best);
+        out.seen.push({ ticker: best.ticker, tau: Math.round(tau2), strike: qq.strike, spot: s.price,
+          gapPct: best.gapPct, z: best.z, side: best.side, price: best.price, prob: best.prob,
+          fee: best.fee, margin: best.margin, ok: best.ok, why: best.reason });
+      }
+    }
+  }
+  out.candidates.sort((a, b) => b.margin - a.margin);
+  return out;
+}
+
+
+async function runCertaintyPass() {
+  const cfg = certaintyCfg();
+  const ls = laneState('certainty');
+  if (!ls.running) return;                       // OPERATOR LAW: only the operator starts a lane
+  ls.heartbeat = new Date().toISOString();
+  ls.last_tick = ls.heartbeat;
+  if (cfg.enabled !== true) { ls.skips++; ls.last_skip = 'lane disabled in config'; return; }
+  const book = state.all_no[state.mode];
+  if (!book) return;
+  const open = book.positions.filter(p => p.strategy === 'certainty' && p.status === 'resting');
+  if (open.length >= cfg.max_concurrent) { ls.skips++; ls.last_skip = 'max concurrent positions'; return; }
+  let scan;
+  try { scan = await scanCertaintyCandidates(cfg); }
+  catch (e) { ls.skips++; ls.last_skip = 'scan failed: ' + String(e.message || e).slice(0, 120); return; }
+  ls.last_scan = { at: scan.at, scanned: scan.scanned, candidates: scan.candidates.length };
+  // LEDGER: record what we SAW, traded or not. A refused candidate that would
+  // have won is as informative as one we took.
+  for (const c of scan.candidates.slice(0, 20)) {
+    try { FACTS.certaintyRecord({ ticker: c.ticker, side: c.side, prob: c.prob, price: c.price, fee: c.fee, margin: c.margin, tau: c.tau, z: c.z, asset: c.asset, traded: c.ok ? 1 : 0, reason: c.reason }); } catch (e) { }
+  }
+  const tradable = scan.candidates.filter(c => c.ok);
+  if (!tradable.length) {
+    ls.skips++;
+    ls.last_skip = 'no certainty candidate (' + scan.scanned + ' markets scanned)';
+    return;
+  }
+  const busy = new Set(open.map(p => p.market_id));
+  const tried = cfg._tried || (cfg._tried = {});
+  for (const c of tradable) {
+    if (busy.has(c.ticker)) continue;
+    if (tried[c.ticker] && Date.now() - tried[c.ticker] < cfg.cooldown_ms) continue;
+    tried[c.ticker] = Date.now();
+    const q = await quoteForTicker(c.ticker);
+    if (!q || q.facts_ok === false) { ls.skips++; ls.last_skip = 'facts refused at order time'; continue; }
+    // RE-VERIFY AT THE MOMENT OF THE ORDER: the book may have moved since the
+    // scan, and we trade the price we can actually get, not the one we saw.
+    const tau = (new Date(q.close_time).getTime() - Date.now()) / 1000;
+    const re = certainty.buildCandidates({ q, spot: c.spot, tau, perSecVol: c.perSecVol, points: spot[c.asset] ? spot[c.asset].points : null }, cfg);
+    const best = certainty.bestCandidate(re);
+    if (!best || !best.ok) { ls.skips++; ls.last_skip = 're-verification refused: ' + (best ? best.reason : 'no candidate'); continue; }
+    const fee = Number((cfg.max_qty * certainty.feePerContract(best.price, cfg.fee_rate)).toFixed(4));
+    const res = createAllNoEntry(best.ticker, best.price, cfg.max_qty, best.prob, best.margin, 0, null, null, 1, q.close_time, {
+      strategy: 'certainty', side: best.side, spot_product: c.asset,
+      strike: best.strike, sigma: c.perSecVol, fee_entry_override: fee,
+    });
+    if (res && res.ok) {
+      ls.entries++;
+      ls.last_edge = best.margin;
+      busy.add(best.ticker);
+      log('certainty_entry', { market_id: best.ticker, side: best.side, px: best.price, prob: best.prob, margin: best.margin, tau: best.tau, z: best.z, fee: best.fee, asset: c.asset });
+    } else if (res && res.error) {
+      ls.last_skip = 'entry refused: ' + res.error;
+    }
+    if (open.length + 1 >= cfg.max_concurrent) break;
+  }
+}
 async function runAllNoEngine() {
   if (!state.no_lanes_enabled) return;
   const noLs = laneState('all_no_markets');
@@ -3063,7 +3388,7 @@ async function runAllNoExits() {
     if (pos.status !== 'resting') continue;
     
     const q = await quoteForTicker(pos.market_id);
-    pumpFills(q);
+    if (q) pumpFills(q);
     
     // SETTLEMENT: book the real Kalshi result at $1/$0. Without this the
     // position zombied forever once the market finalized (no_bid == null).
@@ -3078,7 +3403,7 @@ async function runAllNoExits() {
       if (result.ok) log('all_no_settled_no_result', { market_id: pos.market_id, pnl: result.pnl });
       continue;
     }
-    const mark = pos.side === 'YES' ? q.yes_bid : q.no_bid;
+    const mark = q ? (pos.side === 'YES' ? q.yes_bid : q.no_bid) : null;
     if (!q || mark == null) continue;
     const tau = Math.max(0, (new Date(pos.expiration).getTime() - Date.now()) / 1000);
     const totalLife = Math.max(1, (new Date(pos.expiration).getTime() - new Date(pos.opened_at).getTime()) / 1000);
@@ -3088,9 +3413,13 @@ async function runAllNoExits() {
     let exitReason = '';
     let exitPrice = mark;
     
-    if (pos.take_profit && mark >= pos.take_profit) {
-      shouldExit = true;
-      exitReason = 'take_profit';
+    // TAKE PROFIT IS DEAD (operator order, 2026-11-03) - the paper book now
+    // mirrors LIVE: no early exit of a winner, it rides to settlement and
+    // takes the full $1.00 with no exit fee.
+    // THE CERTAINTY LANE NEVER EXITS EARLY AT ALL: no take profit, no stop, no
+    // time decay. The contract rides to settlement - that IS the strategy.
+    if (pos.strategy === 'certainty') {
+      // nothing to do - ride to settlement
     } else if (pos.stop_loss && mark <= pos.stop_loss) {
       shouldExit = true;
       exitReason = 'stop_loss';
@@ -3215,7 +3544,7 @@ async function boot() {
   // OPERATOR_LAW: exterminate any supervisor/watchdog on boot and continuously
   // so nothing can ever override the operator's button pushes - imperial law.
   try { exterminateSupervisors(); } catch (e) { }
-  setInterval(() => { try { exterminateSupervisors(); } catch (e) { } }, 3000);
+  setInterval(() => { try { exterminateSupervisors(); } catch (e) { } }, 30000);
   series_kind.start();
   quote_stream.start();
 
@@ -3236,6 +3565,10 @@ async function boot() {
   // ALL NO engine - runs every 10s for entries, every 5s for exits
   setInterval(runAllNoEngine, ALL_NO_CONFIG.scan_interval_ms);
   setInterval(runAllNoExits, 5000);
+  // THE CERTAINTY LANE scans on its own clock (the window is only minutes
+  // wide) and NEVER posts a real order in the lab - it is paper only.
+  setInterval(() => { runCertaintyPass().catch(() => { }); }, 5000);
+
 
   // Kalshi WebSocket for real-time market data (replaces 2s polling)
   const seriesList = LANES.flatMap(l => l.seriesList || []).filter(Boolean);
