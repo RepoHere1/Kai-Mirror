@@ -16,6 +16,7 @@ class KalshiWS {
     this.connected = false;
     this.authenticated = false;
     this.pendingSubscriptions = new Map();
+    this.cmdId = 1;
     this.heartbeatTimer = null;
   }
 
@@ -123,11 +124,11 @@ class KalshiWS {
   }
 
   startHeartbeat() {
-    this.heartbeatTimer = setInterval(() => {
-      if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-        this.ws.send(JSON.stringify({ type: 'heartbeat' }));
-      }
-    }, 30000);
+    // 2026-11-04: Kalshi WS v2 has NO client heartbeat command - sending
+    // {type:'heartbeat'} every 30s produced the endless "Unknown command"
+    // errors (one per boot every 30s). The server pings; we answer at the
+    // protocol layer automatically. Keep-alive sending is DELETED.
+    this.heartbeatTimer = null;
   }
 
   stopHeartbeat() {
@@ -157,17 +158,25 @@ class KalshiWS {
   }
 
   subscribeMarkets(seriesTickers) {
+    // 2026-11-04 VERIFIED LIVE: Kalshi WS v2 has NO market-data channel.
+    //   {channels:['market']}          -> {"code":8,"msg":"Unknown channel name"}
+    //   {channels:[{name:'market',...}]} -> {"code":1,"msg":"Unable to process message"}
+    // The only push channels are 'fill', 'user_orders', 'market_positions'.
+    // Quotes therefore come from REST (marketsForSeries + quote_stream), which
+    // is what has been carrying the book all along. This no-op keeps the
+    // call-site contract and logs the reality once.
+    if (!this._marketSubNoticeLogged) {
+      this._marketSubNoticeLogged = true;
+      console.log('[KalshiWS] market-data channel unavailable on WS v2 (verified live); REST quotes remain the source of truth');
+    }
     for (const series of seriesTickers) {
-      const msg = { type: 'subscribe', channel: 'markets', series_ticker: series };
-      this.pendingSubscriptions.set(series, msg);
-      if (this.connected && this.authenticated) {
-        this.send(msg);
-      }
+      this.pendingSubscriptions.delete(series);
     }
   }
 
   subscribeFills() {
-    const msg = { type: 'subscribe', channel: 'fills' };
+    // Proven working shape (verified live 2026-11-04): cmd/params, string channels.
+    const msg = { id: this.cmdId++, cmd: 'subscribe', params: { channels: ['fill'] } };
     this.pendingSubscriptions.set('fills', msg);
     if (this.connected && this.authenticated) {
       this.send(msg);
@@ -175,7 +184,7 @@ class KalshiWS {
   }
 
   subscribeOrders() {
-    const msg = { type: 'subscribe', channel: 'orders' };
+    const msg = { id: this.cmdId++, cmd: 'subscribe', params: { channels: ['user_orders'] } };
     this.pendingSubscriptions.set('orders', msg);
     if (this.connected && this.authenticated) {
       this.send(msg);
@@ -220,6 +229,16 @@ class KalshiWS {
         break;
 
       case 'heartbeat':
+        break;
+
+      case 'subscribed':
+        // 2026-11-04: ack for the fill/user_orders subscriptions. Kalshi v2 has
+        // no market-data channel, so this is the expected terminal state - one
+        // log line, never per-ack spam.
+        if (!this._subAckLogged) {
+          this._subAckLogged = true;
+          console.log('[KalshiWS] subscriptions acked (fill, user_orders)');
+        }
         break;
 
       case 'error':
