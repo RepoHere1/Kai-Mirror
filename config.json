@@ -10,9 +10,10 @@
     "max_position_pct": 0.5,
     "max_order_dollars": 0.5,
     "all_no": {
-      "min_entry_price": 0.5,
-      "max_no_price": 0.7,
-      "max_yes_price": 0.7,
+      "_comment": "2026-11-04 evidence surgery (n=1983 closed trades): every entry priced <0.50 was net positive (+$132), every entry >=0.50 net negative (-$72). Best zone 0.30-0.49 (+$67.26 on n=635). Caps now trade ONLY that zone.",
+      "min_entry_price": 0.3,
+      "max_no_price": 0.49,
+      "max_yes_price": 0.49,
       "min_fair": 0.62,
       "min_edge": 0.015,
       "max_edge": 0.3,

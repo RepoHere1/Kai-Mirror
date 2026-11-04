@@ -1526,7 +1526,9 @@ async function markDryPositions() {
         continue;
       }
       if (q.status === 'finalized' || q.status === 'settled') {
-        closeDryPosition(pos, 0, 'settled_no_result', q.status);
+        // NO FABRICATED ZEROES (2026-11-04 surgery): finalized-without-result
+        // is NOT a $0 settlement. Parking the position costs nothing; a fake
+        // loss corrupts every calibration number the lab produces.
         continue;
       }
       const bid = pos.side === 'YES' ? q.yes_bid : q.no_bid;
@@ -2224,6 +2226,28 @@ function createAllNoEntry(market_id, entry_price, quantity, fair_at_entry, edge,
       !market_id || !expiration) {
     return { error: 'Skipping all_no entry: incomplete market data' };
   }
+
+  // 2026-11-04 SURGERY (the fourth path): this function no longer trusts its
+  // callers. Four callers size positions their own way - the dashboard POST
+  // /api/no-lanes/entry, the certainty lane, pumpFills, runAllNoEntry - and a
+  // dashboard entry booked qty=2 @ $0.56 ($1.12) at 01:30:26 while every
+  // scanner path was already capped. The operator law is enforced HERE, at
+  // the only booking site, so no caller can bypass it again.
+  const cap = effectiveClip();
+  const cappedQty = Math.floor(cap / Math.max(0.01, entry_price));
+  if (cappedQty < 1) {
+    return { error: 'Entry refused: price $' + entry_price.toFixed(2) + ' > order cap $' + cap.toFixed(2) + ' (no contract fits)' };
+  }
+  if (quantity > cappedQty) {
+    log('all_no_qty_capped', { market_id, asked: quantity, allowed: cappedQty, entry_price });
+    quantity = cappedQty;
+  }
+  // ANTI-STACK + CLUSTER re-checked at BOOKING time (fill-lag stacking put 8
+  // positions into one KXBTC15M market on 2026-11-04: -$8.88 in 6 seconds).
+  const sameMkt = book.positions.filter(p => p.market_id === market_id).length;
+  if (sameMkt >= 2) return { error: 'Entry refused: anti-stack (already ' + sameMkt + ' positions in ' + market_id + ')' };
+  const sameRound = book.positions.filter(p => p.expiration === expiration).length;
+  if (sameRound >= 2) return { error: 'Entry refused: cluster cap (' + sameRound + ' positions already in this round)' };
 
   const cost = Number((entry_price * quantity).toFixed(2));
   // FEE REALISM (2026-11-03): Kalshi charges 0.07*p*(1-p) PER CONTRACT on BOTH legs.
@@ -3419,8 +3443,9 @@ async function runAllNoExits() {
       continue;
     }
     if (q && (q.status === 'finalized' || q.status === 'settled')) {
-      const result = closeAllNoPosition(pos.id, 0, 'settled_no_result');
-      if (result.ok) log('all_no_settled_no_result', { market_id: pos.market_id, pnl: result.pnl });
+      // NO FABRICATED ZEROES (2026-11-04 surgery): finalized-without-result is
+      // NOT a $0 settlement. Park it; the real result settles it truthfully.
+      noLs.skips++; noLs.last_skip = 'finalized, awaiting result (not settling at 0)';
       continue;
     }
     const mark = q ? (pos.side === 'YES' ? q.yes_bid : q.no_bid) : null;
