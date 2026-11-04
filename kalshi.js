@@ -236,7 +236,9 @@ function clearCache() {
 // Warm cache for critical endpoints
 async function warmCache() {
   const criticalEndpoints = [
-    { route: '/portfolio/balance', opts: { query: {} } },
+    // 2026-11-04: /portfolio/balance removed from warmup. The warm was a signed
+    // live-key read at every boot - one more drain on the shared key's tight
+    // per-key budget. The mirror never needed it (realBalanceCash is inert).
     { route: '/markets', opts: { query: { limit: 5, status: 'open', series_ticker: 'KXBTC15M' } } },
     { route: '/markets', opts: { query: { limit: 5, status: 'open', series_ticker: 'KXETH15M' } } },
   ];
@@ -270,6 +272,26 @@ setInterval(() => {
   }
 }, 60000);
 
+// PUBLIC MARKET DATA (2026-11-04 shared-key fix): /markets, /events, /series
+// are unauthenticated on the live exchange. Unsigned requests are rate-limited
+// by IP, not by the API key, so the dry mirror no longer eats the LIVE
+// account's per-key request budget (the sustained /portfolio/balance 429s).
+async function publicGet(route, query) {
+  const qs = query && Object.keys(query).length ? '?' + new URLSearchParams(query).toString() : '';
+  const url = LIVE_BASE + route + qs;
+  let r;
+  try {
+    r = await fetch(url, { headers: { 'Accept': 'application/json' }, signal: AbortSignal.timeout(15000) });
+  } catch (e) {
+    throw new Error('public network: ' + (e.message || e));
+  }
+  const text = await r.text();
+  let parsed = null;
+  try { parsed = text ? JSON.parse(text) : null; } catch (e) { parsed = { raw: text }; }
+  if (!r.ok) throw new Error('HTTP ' + r.status + ' GET ' + route + qs + ' :: ' + text.slice(0, 300));
+  return parsed;
+}
+
 // Live-first with demo fallback. Every return is stamped with provenance so the
 // dashboard (and the operator) can see exactly which host answered.
 async function get(route, opts) {
@@ -277,6 +299,14 @@ async function get(route, opts) {
   const key = 'GET ' + route + ' ' + JSON.stringify(opts.query || {});
   return cached(key, opts.ttlMs || 1500, async () => {
     const started = Date.now();
+    // Non-portfolio GETs are PUBLIC market data: go unsigned first. Only
+    // portfolio routes (and a public failure) ever touch a signed key.
+    if (!route.startsWith('/portfolio')) {
+      try {
+        const data = await publicGet(route, opts.query);
+        return { data, source: 'public', host: LIVE_BASE, ms: Date.now() - started, at: new Date().toISOString() };
+      } catch (e) { /* fall through to the signed path */ }
+    }
     try {
       const data = await raw('dry', 'GET', route, opts);
       return { data, source: 'dry', host: LIVE_BASE, ms: Date.now() - started, at: new Date().toISOString() };
