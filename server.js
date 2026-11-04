@@ -632,11 +632,11 @@ const LANES = [
   { name: 'btc_updown', label: 'BTC 15-Min Up/Down', series: 'KXBTC15M', seriesList: ['KXBTC15M'], spot: 'BTC-USD', asset: 'BTC', horizon: '15m' },
   { name: 'eth_updown', label: 'ETH 15-Min Up/Down', series: 'KXETH15M', seriesList: ['KXETH15M'], spot: 'ETH-USD', asset: 'ETH', horizon: '15m' },
   { name: 'xrp_updown', label: 'XRP 15-Min Up/Down', series: 'KXXRP15M', seriesList: ['KXXRP15M'], spot: 'XRP-USD', asset: 'XRP', horizon: '15m' },
-  { name: 'btc_1h_updown', label: 'BTC Daily Ladder', series: 'KXBTCD', seriesList: ['KXBTCD'], spot: 'BTC-USD', asset: 'BTC', horizon: '1d' },
-  { name: 'eth_1h_updown', label: 'ETH Daily Ladder', series: 'KXETHD', seriesList: ['KXETHD'], spot: 'ETH-USD', asset: 'ETH', horizon: '1d' },
-  { name: 'xrp_1h_updown', label: 'XRP Daily Ladder', series: 'KXXRPD', seriesList: ['KXXRPD'], spot: 'XRP-USD', asset: 'XRP', horizon: '1d' },
+  { name: 'btc_1h_updown', label: 'BTC Daily Ladder', series: 'KXBTCD', seriesList: ['KXBTCD'], spot: 'BTC-USD', asset: 'BTC', horizon: '1d', deep: 80 },
+  { name: 'eth_1h_updown', label: 'ETH Daily Ladder', series: 'KXETHD', seriesList: ['KXETHD'], spot: 'ETH-USD', asset: 'ETH', horizon: '1d', deep: 80 },
+  { name: 'xrp_1h_updown', label: 'XRP Daily Ladder', series: 'KXXRPD', seriesList: ['KXXRPD'], spot: 'XRP-USD', asset: 'XRP', horizon: '1d', deep: 80 },
   { name: 'hyperliquid_updown', label: 'Hyperliquid Up/Down', series: 'KXHYPE15M', seriesList: ['KXHYPE15M'], spot: 'HYPE-USD', asset: 'HYPE', horizon: '15m' },
-  { name: 'hyperliquid_1h_updown', label: 'Hyperliquid 1-Hour', series: 'KXHYPE', seriesList: ['KXHYPE'], spot: 'HYPE-USD', asset: 'HYPE', horizon: '1h' },
+  { name: 'hyperliquid_1h_updown', label: 'Hyperliquid 1-Hour', series: 'KXHYPE', seriesList: ['KXHYPE'], spot: 'HYPE-USD', asset: 'HYPE', horizon: '1h', deep: 80 },
   { name: 'all_no_markets', label: 'ALL NO MARKETS', series: null, seriesList: [], spot: null, asset: null, horizon: 'no-side' },
   { name: 'certainty', label: 'CERTAINTY (near-expiry, 90%+ win rate)', series: null, seriesList: [], spot: null, asset: null, horizon: 'certainty' },
 ];
@@ -1167,7 +1167,12 @@ async function activeQuote(lane) {
   const discSeries = await series_kind.resolveFresh(lane.name);
   if (discSeries && !staticSeries.includes(discSeries.series)) staticSeries.push(discSeries.series);
   for (const series of staticSeries) {
-    const res = await marketsForSeries(series, 8);
+    // 2026-11-04: Kalshi's default /markets sort returns the TOP strikes of a
+    // ladder series first. With limit=8 the engine only ever saw the dead far
+    // strikes (evidence: KXBTCD had 200 open markets, 32 within 2% of spot,
+    // while the engine saw 8 strikes 9% away - 81k skips, 0 entries ever).
+    // Ladder lanes fetch deep so the fair-value filter can pick the near-spot rung.
+    const res = await marketsForSeries(series, lane.deep || 8);
     const s = lane.spot ? spot[lane.spot] : null;
     const perSec = s ? perSecondVol(lane.spot, 900) : null;
     const usable = (res.markets || []).filter(m => m.status !== 'finalized' && m.result === '');
@@ -2065,7 +2070,10 @@ async function noBook() {
   const allSeries = await getAllTradableSeries();
   
   for (const s of allSeries) {
-    const res = await marketsForSeries(s, 12); // deeper scan
+    // 2026-11-04: same blindness as activeQuote - hourly/daily ladders need a
+    // deep window to see their near-spot rungs (default sort shows top strikes).
+    const deepLadder = /^KX/.test(s) && !/15M$/.test(s);
+    const res = await marketsForSeries(s, deepLadder ? 80 : 12); // deeper scan
     for (const q of res.markets || []) {
       // Refresh the book and re-verify AT THE MOMENT OF THE DECISION, so the
       // verdict covers exactly the prices that would be traded.
