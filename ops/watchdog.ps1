@@ -60,6 +60,24 @@ function Test-PortListening([int]$Port) {
 
 $strikes = @{ 'mirror' = 0; 'live' = 0 }
 $up = @{ 'mirror' = $false; 'live' = $false }
+$RECYCLE_MIN = 180
+
+# RECYCLE (2026-11-04): long-lived node processes on THIS machine lose the
+# ability to open NEW outbound connections while existing sockets keep working
+# (both books: 'network: fetch failed' on every Kalshi read while a fresh
+# process fetched the same URL in 1.9s; Coinbase WS + local HTTP stayed up).
+# Until the root cause is found upstream, bound the damage: gracefully recycle
+# any server whose OWN /api/health reports more than RECYCLE_MIN minutes of
+# uptime. A slow or failed health probe reads as uptime 0 - a merely-slow
+# server is NEVER recycled (v2 rule 2). Graceful restart flushes state
+# atomically; boots cost ~15s.
+function Get-UpSec([int]$Port) {
+  try {
+    $h = Invoke-WebRequest -Uri "http://127.0.0.1:$Port/api/health" -TimeoutSec 8 -UseBasicParsing
+    $j = $h.Content | ConvertFrom-Json
+    return [int]$j.uptime_sec
+  } catch { return 0 }
+}
 $tick = 0
 $lastRestart = @{ 'mirror' = (Get-Date).AddMinutes(-10); 'live' = (Get-Date).AddMinutes(-10) }
 
@@ -70,6 +88,19 @@ while ($true) {
       if ($strikes[$srv] -gt 0) { WLog "$srv port listening again - strikes cleared" }
       $strikes[$srv] = 0
       $up[$srv] = $true
+      # AGE RECYCLE: probe the server's own uptime; recycle past RECYCLE_MIN.
+      $upSec = Get-UpSec $port
+      if ($upSec -gt ($RECYCLE_MIN * 60)) {
+        $cd = ((Get-Date) - $lastRestart[$srv]).TotalMinutes
+        if ($cd -ge 5) {
+          WLog ("{0} uptime {1}m > {2}m - graceful RECYCLE (fetch-layer rot bound)" -f $srv, [int]($upSec/60), $RECYCLE_MIN)
+          try {
+            $null = Start-Process -FilePath 'powershell.exe' -WindowStyle Hidden -Wait -PassThru `
+              -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', $Kctl, $srv, 'restart'
+          } catch { WLog "$srv recycle launch failed: $($_.Exception.Message)" }
+          $lastRestart[$srv] = Get-Date
+        }
+      }
       continue
     }
     $up[$srv] = $false
