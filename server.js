@@ -2662,6 +2662,22 @@ async function handle(req, res) {
   if (p === '/api/health') {
     return json(res, { ok: true, safe_mode: !!state.safe_mode, state_source: state.state_source || 'primary', boots: state.boot_count || 0, pid: process.pid,
       ok: true, mode: state.mode, uptime_sec: Math.round((Date.now() - new Date(state.booted_at).getTime()) / 1000),
+      // TAPE BLOCK (2026-11-05): calib init stage + vaccine gate + memory, all
+      // in-memory. The watchdog heartbeat prints this every minute.
+      tape: (() => {
+        try {
+          const cs = CALIB.snapshot();
+          const gate = cs.vaccine_gate || {};
+          const ist = cs.init_status || {};
+          const mu = process.memoryUsage();
+          return {
+            calib: ist.status ? (ist.status + '@' + ist.stage + (ist.inserted != null ? '+' + ist.inserted : '')) : 'off',
+            vac_n: gate.outcomes_total || 0, vac_mature: gate.buckets_mature_n40 || 0,
+            vac_ready: !!gate.ready, vac_avoided_c: gate.avoided_loss_cents_per_entry,
+            heap_mb: Math.round(mu.heapUsed / 1048576), rss_mb: Math.round(mu.rss / 1048576),
+          };
+        } catch (e) { return { error: String(e.message || e) }; }
+      })(),
       hosts: { kalshi_live: kalshi.LIVE_BASE, kalshi_demo: kalshi.DEMO_BASE, spot: 'api.exchange.coinbase.com', llm: ENV.KILO_BASE_URL },
       credentials: { live_key: String(kalshi.accounts.dry.keyId || '').slice(0, 8) + '...', demo_key: String(kalshi.accounts.demo.keyId || '').slice(0, 8) + '...', llm_token: (ENV.KILO_TOKEN || '').slice(0, 8) + '...' },
       live_balance: dryCash(),

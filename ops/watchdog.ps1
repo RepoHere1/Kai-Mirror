@@ -91,12 +91,35 @@ $RECYCLE_MIN = 180
 # uptime. A slow or failed health probe reads as uptime 0 - a merely-slow
 # server is NEVER recycled (v2 rule 2). Graceful restart flushes state
 # atomically; boots cost ~15s.
-function Get-UpSec([int]$Port) {
+# TAPE (2026-11-05, operator order): the same probe now also returns the
+# health `tape` block so the heartbeat prints boots, calibration stage,
+# vaccine gate, shard cash, superbrain go/no and heap — one line that tells
+# the whole story of both books every minute.
+function Get-Health([int]$Port) {
   try {
     $h = Invoke-WebRequest -Uri "http://127.0.0.1:$Port/api/health" -TimeoutSec 8 -UseBasicParsing
-    $j = $h.Content | ConvertFrom-Json
-    return [int]$j.uptime_sec
-  } catch { return 0 }
+    return ($h.Content | ConvertFrom-Json)
+  } catch { return $null }
+}
+function Get-UpSec([int]$Port) {
+  $j = Get-Health $Port
+  if ($null -ne $j -and $null -ne $j.uptime_sec) { return [int]$j.uptime_sec }
+  return 0
+}
+function Format-Tape($j) {
+  if ($null -eq $j) { return 'no-health' }
+  $b = "b$($j.boots)"
+  if ($j.tape) {
+    $t = $j.tape
+    $parts = @($b)
+    if ($t.calib) { $parts += "cal=$($t.calib)" }
+    if ($null -ne $t.vac_n) { $parts += "vac=$($t.vac_n)n/$($t.vac_mature)m$(if ($t.vac_ready) {'!READY'} else {''})" }
+    if ($null -ne $t.superbrain_go) { $parts += "go=$(if ($t.superbrain_go) {'YES'} else {'no'})" }
+    if ($t.shards) { $parts += "shards=$($t.shards)" }
+    if ($null -ne $t.heap_mb) { $parts += "heap=$($t.heap_mb)m/rss=$($t.rss_mb)m" }
+    return ($parts -join ' ')
+  }
+  return $b
 }
 $tick = 0
 $lastRestart = @{ 'mirror' = (Get-Date).AddMinutes(-10); 'live' = (Get-Date).AddMinutes(-10) }
@@ -135,8 +158,12 @@ while ($true) {
   }
   # HEARTBEAT: a watchdog that cannot prove it is alive is a watchdog nobody
   # can trust. Every pass states what it saw, so "it did nothing" and "it never
-  # ran" can never be confused again.
+  # ran" can never be confused again. TAPE EDITION (2026-11-05): each book's
+  # line carries its full tape (boots, calib stage, vaccine gate, shards,
+  # superbrain go/no, heap) — read one line, know everything.
   $tick += 1
-  WLog ("heartbeat #{0} mirror={1} live={2} strikes=({3}/{4})" -f $tick, $(if ($up['mirror']) {'up'} else {'DOWN'}), $(if ($up['live']) {'up'} else {'DOWN'}), $strikes['mirror'], $strikes['live'])
+  $mt = Format-Tape (Get-Health 8787)
+  $lt = Format-Tape (Get-Health 8788)
+  WLog ("heartbeat #{0} mirror={1} [{2}] live={3} [{4}] strikes=({5}/{6})" -f $tick, $(if ($up['mirror']) {'up'} else {'DOWN'}), $mt, $(if ($up['live']) {'up'} else {'DOWN'}), $lt, $strikes['mirror'], $strikes['live'])
   Start-Sleep -Seconds 60
 }
