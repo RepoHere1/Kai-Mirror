@@ -114,22 +114,27 @@ $RECYCLE_MIN = 180
 # health `tape` block so the heartbeat prints boots, calibration stage,
 # vaccine gate, shard cash, superbrain go/no and heap — one line that tells
 # the whole story of both books every minute.
-# HANG-PROOF (2026-11-05): Invoke-WebRequest wedged forever inside a diseased
-# TCP stack (observed: watchdog hung 23:45->08:30+, zero heartbeats, holding
-# the mutex). The probe now runs in a KILLABLE JOB with a hard 15s cap; the
-# loop can never be wedged by a probe again.
+# HANG-PROOF v2 (2026-11-05): the Start-Job edition STILL wedged before its
+# first heartbeat (two starts 01:10/01:17 local, zero heartbeat lines) - job
+# spawning itself degrades on this machine. Jobs are GONE. The probe now uses
+# raw .NET HttpWebRequest whose Timeout/ReadWriteTimeout are enforced by the
+# socket layer, not by PowerShell goodwill. The heartbeat also logs FIRST
+# (with the previous tick's tape) so a wedged probe leaves a frozen timestamp
+# trail instead of silence.
 function Get-Health([int]$Port) {
-  $job = Start-Job -ScriptBlock { param($p)
-    try { return ((Invoke-WebRequest -Uri "http://127.0.0.1:$p/api/health" -TimeoutSec 8 -UseBasicParsing).Content | ConvertFrom-Json) }
-    catch { return $null }
-  } -ArgumentList $Port
-  if (Wait-Job $job -Timeout 15) {
-    $r = Receive-Job $job
-    Remove-Job $job -Force
-    return $r
-  }
-  try { Stop-Job $job; Remove-Job $job -Force } catch { }
-  return $null
+  try {
+    $req = [System.Net.HttpWebRequest]::Create("http://127.0.0.1:$Port/api/health")
+    $req.Method = 'GET'
+    $req.Timeout = 4000
+    $req.ReadWriteTimeout = 4000
+    $req.Proxy = $null
+    $resp = $req.GetResponse()
+    try {
+      $sr = New-Object System.IO.StreamReader($resp.GetResponseStream())
+      $body = $sr.ReadToEnd()
+      return ($body | ConvertFrom-Json)
+    } finally { try { $resp.Close() } catch { } }
+  } catch { return $null }
 }
 function Get-UpSec([int]$Port) {
   $j = Get-Health $Port
@@ -152,6 +157,8 @@ function Format-Tape($j) {
   return $b
 }
 $tick = 0
+$script:MT = 'warming'
+$script:LT = 'warming'
 $lastRestart = @{ 'mirror' = (Get-Date).AddMinutes(-10); 'live' = (Get-Date).AddMinutes(-10) }
 
 while ($true) {
@@ -191,9 +198,11 @@ while ($true) {
   # ran" can never be confused again. TAPE EDITION (2026-11-05): each book's
   # line carries its full tape (boots, calib stage, vaccine gate, shards,
   # superbrain go/no, heap) — read one line, know everything.
+  # HEARTBEAT-FIRST: log with the PREVIOUS tick's tape before refreshing, so
+  # the log line can never be delayed (or silenced) by a probe.
   $tick += 1
-  $mt = Format-Tape (Get-Health 8787)
-  $lt = Format-Tape (Get-Health 8788)
-  WLog ("heartbeat #{0} mirror={1} [{2}] live={3} [{4}] strikes=({5}/{6})" -f $tick, $(if ($up['mirror']) {'up'} else {'DOWN'}), $mt, $(if ($up['live']) {'up'} else {'DOWN'}), $lt, $strikes['mirror'], $strikes['live'])
+  WLog ("heartbeat #{0} mirror={1} [{2}] live={3} [{4}] strikes=({5}/{6})" -f $tick, $(if ($up['mirror']) {'up'} else {'DOWN'}), $script:MT, $(if ($up['live']) {'up'} else {'DOWN'}), $script:LT, $strikes['mirror'], $strikes['live'])
+  $script:MT = Format-Tape (Get-Health 8787)
+  $script:LT = Format-Tape (Get-Health 8788)
   Start-Sleep -Seconds 60
 }
