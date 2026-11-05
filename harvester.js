@@ -70,7 +70,17 @@ function create(deps) {
           ticker: r.market_id, side: r.side, strategy: 'maker_harvester',
           claimed: r.fair, price: r.limit_entry, minEdge: HARVEST_MIN_EDGE,
         });
-        if (!g.ok || g.n < HARVEST_MIN_N) continue;
+        if (!g.ok || g.n < HARVEST_MIN_N) {
+          // 2026-11-05 STARVATION FIX: every unposted candidate is a FREE
+          // lesson — shadow it so buckets warm from the FULL noBook()
+          // universe (both sides, every series) instead of only the narrow
+          // all_no rejects. 15m series settle in minutes; the grid fills fast.
+          try {
+            CALIB.shadowOpen({ ticker: r.market_id, side: r.side, strategy: 'maker_harvester',
+              claimed: r.fair, price: r.limit_entry, gate: g });
+          } catch (e) { }
+          continue;
+        }
         const openSame = h.positions.filter(p => p.market_id === r.market_id).length;
         if (openSame >= MAX_PER_MARKET) continue;
         if (h.positions.length >= MAX_ACTIVE) break;

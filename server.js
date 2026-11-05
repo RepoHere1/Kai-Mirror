@@ -925,7 +925,7 @@ const FILLSIM = fillSim.create({ getState: () => state, log: (k, o) => { try { l
 // fair is NEVER traded directly — every entry must clear the calibration gate
 // (buy below REALIZED probability). Blocked candidates are shadow-traded for
 // free so the buckets keep learning. Warm-starts from all settled history.
-const CALIB = calibrationMod.create({ dbRun, dbAll, log: (k, o) => { try { log(k, o); } catch (e) {} } });
+const CALIB = calibrationMod.create({ dbRun, dbAll, dbFile: DB_FILE, log: (k, o) => { try { log(k, o); } catch (e) {} } });
 // THE HARVESTER (2026-11-04): mass maker-order lane. Posts resting bids only
 // where the empirical ledger pays >= 8c edge with n>=50 proof; TTL-cancels.
 const HARVEST = harvesterMod.create({ CALIB, FILLSIM, getState: () => state, log: (k, o) => { try { log(k, o); } catch (e) {} }, persistTrade });
