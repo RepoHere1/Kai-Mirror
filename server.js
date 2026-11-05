@@ -38,6 +38,8 @@ const perp = require('./perp_feed');
 const series_kind = require('./series_kind');
 const fillSim = require('./fill_sim');
 const conviction = require('./conviction');
+const calibrationMod = require('./calibration');
+const harvesterMod = require('./harvester');
 const certainty = require('./certainty');
 const quote_stream = require('./quote_stream');
 const dataFacts = require('./data_facts');
@@ -919,6 +921,15 @@ try {
 } catch (e) { }
 // The paper book may only book a fill when a REAL public print proves it happened.
 const FILLSIM = fillSim.create({ getState: () => state, log: (k, o) => { try { log(k, o); } catch (e) {} } });
+// THE VACCINE (2026-11-04): empirical probability ledger. The model's claimed
+// fair is NEVER traded directly — every entry must clear the calibration gate
+// (buy below REALIZED probability). Blocked candidates are shadow-traded for
+// free so the buckets keep learning. Warm-starts from all settled history.
+const CALIB = calibrationMod.create({ dbRun, dbAll, log: (k, o) => { try { log(k, o); } catch (e) {} } });
+// THE HARVESTER (2026-11-04): mass maker-order lane. Posts resting bids only
+// where the empirical ledger pays >= 8c edge with n>=50 proof; TTL-cancels.
+const HARVEST = harvesterMod.create({ CALIB, FILLSIM, getState: () => state, log: (k, o) => { try { log(k, o); } catch (e) {} }, persistTrade });
+CALIB.init().catch((e) => { console.error('[calibration] boot failed:', e.message); });
 
 // BOOT COUNTER: every process start bumps this; the tape PULSE prints it so
 // silent watchdog restart loops become visible.
@@ -1372,6 +1383,9 @@ function openDryPosition(lane, q, side, price, fair, edge, sigma) {
   if (sameMkt >= 2) { const lsm = laneState(lane.name); lsm.skips++; lsm.last_skip = 'anti-stack: ' + sameMkt + ' positions already in ' + q.ticker; return null; }
   const sameRound = state.dry.positions.filter(p => p.close_time && p.close_time === q.close_time).length;
   if (q.close_time && sameRound >= 2) { const lsr = laneState(lane.name); lsr.skips++; lsr.last_skip = 'cluster cap: ' + sameRound + ' positions already settle this round'; return null; }
+  // LIFETIME MARKET CAP (CODE LAW 2026-11-04): no market is enterable more
+  // than MAX_MARKET_ENTRIES times, ever — same law the all_no book obeys.
+  if (marketEntryCount(q.ticker) >= MAX_MARKET_ENTRIES) { const lsc = laneState(lane.name); lsc.skips++; lsc.last_skip = 'lifetime cap: ' + q.ticker + ' already entered ' + MAX_MARKET_ENTRIES + 'x'; return null; }
   const cost = Number((qty * price).toFixed(4));
   if (dryCash() < cost) { const ls = laneState(lane.name); ls.skips++; ls.last_skip = 'insufficient dry cash'; return null; }
   const stop = Number((price * (1 - state.runtime.stop_loss)).toFixed(3));
@@ -1409,6 +1423,8 @@ function openDryPosition(lane, q, side, price, fair, edge, sigma) {
   state.dry.positions.push(pos);
   const ls = laneState(lane.name);
   ls.entries++;
+  // LIFETIME MARKET CAP bookkeeping for lane entries too (CODE LAW).
+  bumpMarketEntry(pos.market_id);
   ls.heartbeat = new Date().toISOString();
   ls.last_series = q.series;
   log('dry_open', { strategy: lane.name, market: pos.market_id, side, entry: price, qty, cost, fair: pos.fair_at_entry, edge: pos.edge_at_entry, source: pos.source, bid_at_entry, ask_at_entry });
@@ -1441,6 +1457,11 @@ function closeDryPosition(pos, exitPrice, reason, result) {
     fair_at_entry: pos.fair_at_entry != null ? pos.fair_at_entry : null,
     edge_at_entry: pos.edge_at_entry != null ? pos.edge_at_entry : null,
     kelly_fraction: pos.kelly_fraction != null ? pos.kelly_fraction : null,
+    // Vol-audit fields (2026-11-04 forensics): sigma/strike/horizon were
+    // dropped here, so every lane row in trading.db had NULL sigma. Fixed.
+    sigma_per_sec: pos.sigma_per_sec != null ? pos.sigma_per_sec : null,
+    strike: pos.strike != null ? pos.strike : null,
+    horizon: pos.horizon != null ? pos.horizon : null,
     // Fill quality tracking
     bid_at_entry: pos.bid_at_entry,
     ask_at_entry: pos.ask_at_entry,
@@ -1507,6 +1528,19 @@ function closeDryPosition(pos, exitPrice, reason, result) {
   persistTrade(trade);
   if (fillQuality != null) persistFillQuality({ market_id: pos.market_id, side: pos.side, strategy: pos.strategy, entry_price: pos.entry_price, bid_at_entry: pos.bid_at_entry, ask_at_entry: pos.ask_at_entry, fill_quality: fillQuality, timestamp: trade.exit_timestamp });
   if (reason === 'settled') persistSettlement({ market_id: pos.market_id, side: pos.side, strategy: pos.strategy, settled_price: exitPrice, kalshi_result: result, coinbase_spot_at_settlement: null, coinbase_spot_time: null, spot_product: null, entry_price: pos.entry_price, pnl: trade.pnl, timestamp: trade.exit_timestamp, spot_deviation: null });
+  // Settled lane trades feed the calibration ledger too — every settled
+  // outcome the vaccine can learn from, it gets.
+  if (reason === 'settled') {
+    try {
+      CALIB.recordOutcome({
+        market_id: pos.market_id, strategy: pos.strategy, side: pos.side,
+        claimed: pos.fair_at_entry, price: pos.entry_price,
+        outcome: exitPrice > 0, pnl: trade.pnl,
+        sigma: pos.sigma_per_sec, strike: pos.strike, horizon: pos.horizon,
+        ts: pos.opened,
+      });
+    } catch (e) { }
+  }
   removePosition(pos.id);
   save();
 }
@@ -2063,6 +2097,9 @@ function pumpFills(q) {
   for (const ev of FILLSIM.observe(q)) {
     if (ev.type !== 'filled' || !ev.intent.book) continue;
     const a = ev.intent.book;
+    // HARVESTER fills route to the harvester's own paper ledger; everything
+    // else books into the all_no book as before.
+    if (a.extra && a.extra.harvester) { HARVEST.bookFill(a); continue; }
     createAllNoEntry(a.market_id, a.entry, a.qty, a.fair, a.edge, a.kelly, a.stop,
       a.take_profit, a.confidence, a.expiration, a.extra);
   }
@@ -2087,6 +2124,15 @@ async function noBook() {
       // verdict covers exactly the prices that would be traded.
       recordFact(quote_stream.apply(q));
       pumpFills(q);
+      // FINALIZED MARKET SWEEP: settle every pending shadow (the vaccine's
+      // free lessons) and every harvester paper position the moment the REAL
+      // Kalshi result appears — for ALL markets, not just ones we hold.
+      if (q.result === 'yes' || q.result === 'no') {
+        try {
+          CALIB.settleResult(q.ticker, q.result === 'yes');
+          HARVEST.settleResult(q.ticker, q.result === 'yes');
+        } catch (e) { }
+      }
       if (q.status === 'finalized' || q.result) continue;
       if (!q.strike || !q.close_time) continue;
       
@@ -2160,9 +2206,28 @@ async function noBook() {
         }
         const e = fairSide - bid;                           // REAL maker edge
         if (e < anCfg.min_edge) return;
-        // TOO-GOOD FILTER: an edge > max_edge means the MODEL is wrong, not
-        // that the market is giving money away.
-        if (e > (anCfg.max_edge != null ? anCfg.max_edge : 0.18)) return;
+        // TOO-GOOD FILTER (CODE LAW 2026-11-04): an edge > 0.15 means the
+        // MODEL is wrong, not that the market is giving money away. This cap
+        // lives in CODE, not runtime config — the Oct 26 config surgery that
+        // raised max_edge to 0.30 is exactly how 1,136 zero-win entries got
+        // made. No runtime override may ever raise it.
+        if (e > MAX_CLAIMED_EDGE) return;
+        // THE VACCINE: the claimed fair is a hypothesis, not a probability.
+        // The bucket's REALIZED record (with market price as prior) is the
+        // only probability we trade against. Blocked candidates become free
+        // shadow rows so the bucket keeps learning while we refuse to pay.
+        const cal = CALIB.gate({
+          ticker: q.ticker, side, strategy: 'all_no_markets',
+          claimed: fairSide, price: bid, minEdge: Math.max(anCfg.min_edge, 0.05),
+        });
+        if (!cal.ok) {
+          CALIB.shadowOpen({
+            ticker: q.ticker, side, strategy: 'all_no_markets',
+            claimed: fairSide, price: bid, gate: cal,
+            sigma: perSec || null, tau, strike: q.strike, spot: (sp && sp.price) || null,
+          });
+          return;
+        }
         const kelly = Math.max(0, e / (1 - bid));
         const kellyCapped = Math.min(0.25, kelly);          // cap at 25% Kelly
         // OPERATOR ORDER 2026-11-04: every order ≤ $0.50. The Kelly notional
@@ -2197,6 +2262,9 @@ async function noBook() {
           strike: q.strike,
           sigma: perSec || null,
           spot_product: asset,
+          // THE VACCINE VERDICT: empirical posterior, bucket n, realized rate.
+          calib: cal,
+          adjusted: cal.adjusted,
         });
       };
       mkRow('NO', fair, no_bid, no_ask);
@@ -2320,6 +2388,9 @@ function createAllNoEntry(market_id, entry_price, quantity, fair_at_entry, edge,
   position.fee_entry = fee_entry;
   book.positions.push(position);
   book.entries++;
+  // LIFETIME MARKET CAP bookkeeping: every booked entry counts, whatever
+  // path created it (engine, manual, FILLSIM fill, harvester excluded).
+  bumpMarketEntry(position.market_id);
   save();
 
   return { ok: true, position, balance: book.balance };
@@ -2350,18 +2421,28 @@ function closeAllNoPosition(position_id, exit_price, exit_reason) {
     exit_price: Number(exit_price.toFixed(3)),
     quantity: pos.quantity,
     cost: pos.cost,
+    cost_basis: pos.cost,
     proceeds,
     pnl: net_pnl,
     roi,
     fair_at_entry: pos.fair_at_entry != null ? pos.fair_at_entry : null,
     edge_at_entry: pos.edge_at_entry != null ? pos.edge_at_entry : null,
     kelly_fraction: pos.kelly_fraction != null ? pos.kelly_fraction : null,
+    sigma_per_sec: pos.sigma_per_sec != null ? pos.sigma_per_sec : null,
+    strike: pos.strike != null ? pos.strike : null,
+    horizon: pos.horizon != null ? pos.horizon : null,
     fee_paid,
     fee_entry: pos.fee_entry || 0,
     fee_exit,
     exit_reason,
+    result: exit_reason === 'settled' ? (exit_price > 0 ? 'won' : 'lost') : exit_reason,
+    hold_seconds: Math.round((Date.now() - new Date(pos.opened_at || Date.now()).getTime()) / 1000),
+    opened: pos.opened_at,
     opened_at: pos.opened_at,
     closed_at: new Date().toISOString(),
+    exit_timestamp: new Date().toISOString(),
+    settled_price: exit_reason === 'settled' ? Number(exit_price.toFixed(3)) : null,
+    settlement_source: exit_reason === 'settled' ? 'kalshi' : null,
   };
 
   // Update book
@@ -2381,6 +2462,26 @@ function closeAllNoPosition(position_id, exit_price, exit_reason) {
   book.balance += proceeds - fee_exit;
   book.total_pnl += net_pnl;
   noteClipOutcome(net_pnl);
+  // FORENSICS LAW (2026-11-04): every closed all_no trade lands in SQLite —
+  // trades table, settlement table, and the calibration ledger. The all_no
+  // book was in-memory only; 92k rows of forensics could not see it.
+  try {
+    persistTrade(trade);
+    if (exit_reason === 'settled') {
+      persistSettlement({
+        market_id: pos.market_id, side: pos.side || 'NO', strategy: pos.strategy,
+        settled_price: Number(exit_price.toFixed(3)), kalshi_result: exit_price > 0 ? (pos.side === 'YES' ? 'yes' : 'no') : (pos.side === 'YES' ? 'no' : 'yes'),
+        coinbase_spot_at_settlement: null, coinbase_spot_time: null, spot_product: null,
+        entry_price: pos.entry_price, pnl: net_pnl, timestamp: trade.exit_timestamp, spot_deviation: null,
+      });
+      CALIB.recordOutcome({
+        market_id: pos.market_id, strategy: pos.strategy, side: pos.side || 'NO',
+        claimed: pos.fair_at_entry, price: pos.entry_price, outcome: exit_price > 0,
+        pnl: net_pnl, sigma: pos.sigma_per_sec, strike: pos.strike,
+        horizon: pos.horizon, ts: pos.opened_at,
+      });
+    }
+  } catch (e) { console.error('all_no persist failed:', e.message); }
   save();
   log('all_no_exit', { id: pos.id, market_id: pos.market_id, entry: pos.entry_price, exit: exit_price, pnl: net_pnl, balance_after: book.balance });
 
@@ -2606,6 +2707,11 @@ async function handle(req, res) {
     return json(res, { ok: true, updated, runtime: state.runtime });
   }
   if (p === '/api/config') return json(res, { ok: true, runtime: state.runtime });
+  // THE VACCINE, VISIBLE: per-bucket realized win rates vs claimed fairs —
+  // the empirical probability table every entry is now gated against.
+  if (p === '/api/calibration') return json(res, CALIB.snapshot());
+  // THE HARVESTER, VISIBLE: resting-order stats, fill rate, settled EV.
+  if (p === '/api/harvester') return json(res, HARVEST.snapshot());
   if (p === '/api/cache') return json(res, { ok: true, stats: kalshi.getCacheStats ? kalshi.getCacheStats() : { error: 'not available' } });
   if (p === '/api/cache' && method === 'POST') {
     const b = await readBody(req);
@@ -3206,6 +3312,34 @@ const ALL_NO_CONFIG = {
   min_confidence: 0.3,            // minimum confidence
 };
 
+// ---------------------------------------------------------------------------
+// CODE LAWS (2026-11-04 forensics) — deliberately NOT runtime-overridable.
+// ---------------------------------------------------------------------------
+// Claimed edge beyond this = model error, never opportunity. The Oct 26
+// runtime surgery that raised max_edge to 0.30 is exactly how 1,136 zero-win
+// entries got made (-$2,216 on ONE strike). No config may ever raise this.
+const MAX_CLAIMED_EDGE = 0.15;
+// One market may be entered at most this many times, EVER (lifetime). Oct 26:
+// the same strike was re-entered 1,136 times in 2 hours because each loss
+// made it look "cheaper". Enforced at every entry path.
+const MAX_MARKET_ENTRIES = 3;
+
+// Lifetime entry counter per market. Persisted in state, incremented on every
+// booked entry regardless of path (engine, manual API, FILLSIM fill).
+function marketEntryCount(ticker) {
+  if (!state.market_entry_log) state.market_entry_log = {};
+  return state.market_entry_log[ticker] || 0;
+}
+function bumpMarketEntry(ticker) {
+  if (!state.market_entry_log) state.market_entry_log = {};
+  state.market_entry_log[ticker] = (state.market_entry_log[ticker] || 0) + 1;
+  // Bound the log: drop the oldest keys if it ever grows absurd.
+  const keys = Object.keys(state.market_entry_log);
+  if (keys.length > 5000) {
+    for (const k of keys.slice(0, keys.length - 3000)) delete state.market_entry_log[k];
+  }
+}
+
 // ===========================================================================
 // CERTAINTY LANE (2026-11-03) - PAPER ONLY IN THE LAB
 // ===========================================================================
@@ -3383,6 +3517,9 @@ async function runAllNoEngine() {
   
   const rows = await noBook();
   if (!rows.length) noLs.last_skip = 'scan pass: no candidates met the NO gates';
+  // THE HARVESTER rides the same scan: resting maker bids wherever the
+  // empirical ledger pays >= 8c edge with n>=50 proof. Paper only.
+  try { HARVEST.run(rows); } catch (e) { }
   const book = state.all_no[state.mode];
   if (!book || book.balance < 5) { noLs.last_skip = 'book balance below $5 floor'; return; }
   
@@ -3393,6 +3530,17 @@ async function runAllNoEngine() {
   
   for (const r of rows) {
     if (r.edge < cfg.min_edge) continue;
+    // THE VACCINE, second door: rows only exist if the calibration gate
+    // passed at scan time, but a market can finalize between scan and here —
+    // re-verify the gate against the current bucket record.
+    if (!r.calib || r.calib.ok !== true) continue;
+    // LIFETIME MARKET CAP (CODE LAW): a market is enterable at most
+    // MAX_MARKET_ENTRIES times, ever, across every path. Oct 26's 1,136
+    // entries on one strike are why this exists.
+    if (marketEntryCount(r.market_id) >= MAX_MARKET_ENTRIES) {
+      noLs.last_skip = 'lifetime cap: ' + r.market_id + ' already entered ' + MAX_MARKET_ENTRIES + 'x';
+      continue;
+    }
     if (r.kelly <= 0) continue;
     if (r.confidence < (cfg.min_confidence != null ? cfg.min_confidence : 0.3)) continue;
     if (r.one_sided !== true && (r.spread < (cfg.min_spread != null ? cfg.min_spread : 0) || r.spread > (cfg.max_spread != null ? cfg.max_spread : 0.05))) continue;

@@ -28,6 +28,26 @@ if (-not $acquired) { exit 1 }   # another watchdog already owns the job
 # control covers. A watchdog that vanishes on a temp cleanup stops healing the
 # trading server. Both scripts now live in the REPOSITORY.
 $Kctl = Join-Path $PSScriptRoot 'kctl.ps1'
+
+# BOUNDED kctl runner (2026-11-04 incident): kctl wedged for 40+ minutes
+# inside an unbounded netstat call, and because the watchdog ran it with
+# Start-Process -Wait, the WATCHDOG wedged with it and both books stayed
+# down. kctl is now started hidden WITHOUT -Wait, then Wait-Process caps it
+# at 3 minutes. On timeout the kctl process TREE is killed (its node child
+# survives — kctl only kills what it owns when asked to stop; a start that
+# already launched keeps its server). The watchdog always keeps looping.
+function Invoke-KctlRestart([string]$srv) {
+  $p = Start-Process -FilePath 'powershell.exe' -WindowStyle Hidden -PassThru `
+    -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', $Kctl, $srv, 'restart'
+  $done = $true
+  try { Wait-Process -Id $p.Id -Timeout 180 -ErrorAction Stop } catch { $done = $false }
+  if ($done) {
+    WLog "$srv kctl restart finished"
+  } else {
+    WLog "$srv kctl restart exceeded 180s - killing kctl tree, keeping node children"
+    try { & taskkill.exe /PID $p.Id /T /F 2>&1 | Out-Null } catch { }
+  }
+}
 $Log  = Join-Path $PSScriptRoot 'watchdog.log'
 function WLog([string]$m) { Add-Content -Path $Log -Value ("{0} {1}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $m) }
 WLog 'watchdog v3 started (repo-stable scripts, ownership-safe pids, graceful recovery)'
@@ -94,11 +114,8 @@ while ($true) {
         $cd = ((Get-Date) - $lastRestart[$srv]).TotalMinutes
         if ($cd -ge 5) {
           WLog ("{0} uptime {1}m > {2}m - graceful RECYCLE (fetch-layer rot bound)" -f $srv, [int]($upSec/60), $RECYCLE_MIN)
-          try {
-            $null = Start-Process -FilePath 'powershell.exe' -WindowStyle Hidden -Wait -PassThru `
-              -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', $Kctl, $srv, 'restart'
-          } catch { WLog "$srv recycle launch failed: $($_.Exception.Message)" }
-          $lastRestart[$srv] = Get-Date
+        try { Invoke-KctlRestart $srv } catch { WLog "$srv recycle launch failed: $($_.Exception.Message)" }
+        $lastRestart[$srv] = Get-Date
         }
       }
       continue
@@ -110,13 +127,8 @@ while ($true) {
     $mins = ((Get-Date) - $lastRestart[$srv]).TotalMinutes
     if ($mins -lt 5) { WLog "$srv cooldown $([int]$mins)m - restart skipped"; continue }
     WLog "$srv confirmed down - issuing GRACEFUL restart"
-    # HIDDEN child: a nested PowerShell inherits a VISIBLE console window and
-    # flashes an empty black rectangle on every restart. The operator saw
-    # exactly that. Start it hidden and wait for it to finish.
-    try {
-      $null = Start-Process -FilePath 'powershell.exe' -WindowStyle Hidden -Wait -PassThru `
-        -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', $Kctl, $srv, 'restart'
-    } catch { WLog "$srv restart launch failed: $($_.Exception.Message)" }
+    # BOUNDED (2026-11-04 incident): never Start-Process -Wait on kctl again.
+    try { Invoke-KctlRestart $srv } catch { WLog "$srv restart launch failed: $($_.Exception.Message)" }
     $lastRestart[$srv] = Get-Date
     $strikes[$srv] = 0
     WLog "$srv restart issued"
