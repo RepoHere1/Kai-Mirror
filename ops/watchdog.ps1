@@ -22,7 +22,26 @@ $mtx = New-Object System.Threading.Mutex($false, 'Global\KaiWatchdog')
 $acquired = $false
 try { $acquired = $mtx.WaitOne(0) }
 catch [System.Threading.AbandonedMutexException] { $acquired = $true }   # previous owner was killed: we own it now
-if (-not $acquired) { exit 1 }   # another watchdog already owns the job
+if (-not $acquired) {
+  # STALL TAKEOVER (2026-11-05): a healthy holder logs a heartbeat every 60s.
+  # If the log is stale > 5 min while the mutex is held, the holder is WEDGED
+  # (observed 2026-11-04 23:45 -> 2026-11-05 08:30). Kill every watchdog
+  # powershell and take over — the fleet must never be unwatched.
+  $stale = $true
+  try {
+    $lf = Join-Path $PSScriptRoot 'watchdog.log'
+    if ((Test-Path $lf) -and ((Get-Date) - (Get-Item $lf).LastWriteTime).TotalMinutes -lt 5) { $stale = $false }
+  } catch { }
+  if ($stale) {
+    Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" | Where-Object { $_.CommandLine -match 'watchdog\.ps1' -and $_.ProcessId -ne $PID } | ForEach-Object {
+      try { & taskkill.exe /PID $_.ProcessId /T /F 2>&1 | Out-Null } catch { }
+    }
+    Start-Sleep -Seconds 2
+    try { $mtx.ReleaseMutex(); } catch { }
+    try { $acquired = $mtx.WaitOne(0) } catch [System.Threading.AbandonedMutexException] { $acquired = $true }
+  }
+}
+if (-not $acquired) { exit 1 }   # another healthy watchdog owns the job
 # STABLE PATHS (v3 - 2026-11-03). The watchdog used to live in
 # %TEMP%\opencode, which Windows may clean at any time and which no version
 # control covers. A watchdog that vanishes on a temp cleanup stops healing the
@@ -95,11 +114,22 @@ $RECYCLE_MIN = 180
 # health `tape` block so the heartbeat prints boots, calibration stage,
 # vaccine gate, shard cash, superbrain go/no and heap — one line that tells
 # the whole story of both books every minute.
+# HANG-PROOF (2026-11-05): Invoke-WebRequest wedged forever inside a diseased
+# TCP stack (observed: watchdog hung 23:45->08:30+, zero heartbeats, holding
+# the mutex). The probe now runs in a KILLABLE JOB with a hard 15s cap; the
+# loop can never be wedged by a probe again.
 function Get-Health([int]$Port) {
-  try {
-    $h = Invoke-WebRequest -Uri "http://127.0.0.1:$Port/api/health" -TimeoutSec 8 -UseBasicParsing
-    return ($h.Content | ConvertFrom-Json)
-  } catch { return $null }
+  $job = Start-Job -ScriptBlock { param($p)
+    try { return ((Invoke-WebRequest -Uri "http://127.0.0.1:$p/api/health" -TimeoutSec 8 -UseBasicParsing).Content | ConvertFrom-Json) }
+    catch { return $null }
+  } -ArgumentList $Port
+  if (Wait-Job $job -Timeout 15) {
+    $r = Receive-Job $job
+    Remove-Job $job -Force
+    return $r
+  }
+  try { Stop-Job $job; Remove-Job $job -Force } catch { }
+  return $null
 }
 function Get-UpSec([int]$Port) {
   $j = Get-Health $Port
