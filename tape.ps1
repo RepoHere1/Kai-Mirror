@@ -167,6 +167,31 @@ while ($true) {
     $lanesOn = 0
     if ($st) { foreach ($p in $st.PSObject.Properties) { if ($p.Value.running) { $lanesOn++ } } }
     $totPnl = if ($null -ne $lastPnl -and $null -ne $lastLanePnl) { [Math]::Round($lastPnl + $lastLanePnl, 2) } else { '?' }
+    # THE VACCINE, on the tape: empirical calibration verdict. Green = the model
+    # is calibrated or understates; Red = the death zone (it overstates favorites);
+    # DarkYellow = not enough settled evidence yet (n < 20 per bucket).
+    $cal = J "http://127.0.0.1:$($Cfg.Port)/api/calibration"
+    if ($cal -and $cal.buckets) {
+      $warm = @($cal.buckets | Where-Object { [int]$_.n -ge 20 })
+      $over = @($warm | Where-Object { $_.status -eq 'overstated' })
+      $okBk = @($warm | Where-Object { $_.status -ne 'overstated' })
+      $worst = $null
+      foreach ($bkt in $warm) { if ($null -eq $worst -or [double]$bkt.bias -gt [double]$worst.bias) { $worst = $bkt } }
+      $vcol = if ($warm.Count -eq 0) { 'DarkYellow' } elseif ($over.Count -gt $okBk.Count) { 'Red' } else { 'Green' }
+      $wtxt = 'no warm buckets (n>=20) yet'
+      if ($worst) { $wtxt = ("worst {0}: model {1} real {2} (n={3})" -f $worst.bucket, [Math]::Round([double]$worst.center,2), [Math]::Round([double]$worst.realized,2), $worst.n) }
+      Line $vcol ("VACCINE {0} warm buckets | {1} overstated / {2} ok | {3} | shadows {4}" -f $warm.Count, $over.Count, $okBk.Count, $wtxt, $(if ($null -ne $cal.pending_shadows) { $cal.pending_shadows } else { 0 }))
+    }
+    # THE HARVESTER, on the tape: mass maker-order lane stats. EV/contract goes
+    # Green once settled fills prove it positive, Red once negative.
+    $hv = J "http://127.0.0.1:$($Cfg.Port)/api/harvester"
+    if ($hv) {
+      $ev = $hv.stats.ev_per_contract
+      $evTxt = '?'
+      if ($null -ne $ev) { $evTxt = [Math]::Round([double]$ev, 3) }
+      $hcol = if ($null -eq $ev) { 'DarkYellow' } elseif ([double]$ev -gt 0) { 'Green' } else { 'Red' }
+      Line $hcol ("HARVEST {0} open | bids {1} filled {2} settled {3} wins {4} | EV/contract {5}" -f $hv.open_positions, $hv.stats.intents, $hv.stats.filled, $hv.stats.settled, $hv.stats.wins, $evTxt)
+    }
     Line 'DarkCyan' ("PULSE alive | bal `${0} | all_no `${1} (n={2}) | lanes `${3} (n={4}) | TOTAL `${5} | lanes {6} on | uptime {7}m | boots {8}" -f (BalTxt $lastBal), (BalTxt $lastPnl), ($(if ($nb) { $nb.book.entries } else { '?' })), (BalTxt $lastLanePnl), $lastLaneCount, $totPnl, $lanesOn, [int]($lastUptime/60), $boots)
   }
 
