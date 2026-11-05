@@ -162,14 +162,25 @@ $script:LT = 'warming'
 $lastRestart = @{ 'mirror' = (Get-Date).AddMinutes(-10); 'live' = (Get-Date).AddMinutes(-10) }
 
 while ($true) {
-  foreach ($srv in 'mirror','live') {
-    $port = if ($srv -eq 'mirror') { 8787 } else { 8788 }
-    if (Test-PortListening $port) {
+  # ARMORED LOOP (2026-11-05): three watchdog generations wedged before their
+  # first heartbeat with zero evidence. Every step now leaves a breadcrumb,
+  # and nothing inside the loop can kill or stall the loop silently (every
+  # probe is capped; every exception is logged and swallowed).
+  try {
+    WLog "loop#$($tick+1) begin"
+    foreach ($srv in 'mirror','live') {
+      $port = if ($srv -eq 'mirror') { 8787 } else { 8788 }
+      $listening = $false
+      try { $listening = Test-PortListening $port } catch { WLog "$srv port-test threw: $($_.Exception.Message)" }
+      WLog "loop#$($tick+1) $srv port=$listening"
+      if ($listening) {
       if ($strikes[$srv] -gt 0) { WLog "$srv port listening again - strikes cleared" }
       $strikes[$srv] = 0
       $up[$srv] = $true
       # AGE RECYCLE: probe the server's own uptime; recycle past RECYCLE_MIN.
-      $upSec = Get-UpSec $port
+      $upSec = 0
+      try { $upSec = Get-UpSec $port } catch { WLog "$srv Get-UpSec threw: $($_.Exception.Message)" }
+      WLog "loop#$($tick+1) $srv upSec=$upSec"
       if ($upSec -gt ($RECYCLE_MIN * 60)) {
         $cd = ((Get-Date) - $lastRestart[$srv]).TotalMinutes
         if ($cd -ge 5) {
@@ -192,6 +203,9 @@ while ($true) {
     $lastRestart[$srv] = Get-Date
     $strikes[$srv] = 0
     WLog "$srv restart issued"
+    }
+  } catch {
+    WLog "loop#$($tick+1) CAUGHT: $($_.Exception.GetType().Name): $($_.Exception.Message)"
   }
   # HEARTBEAT: a watchdog that cannot prove it is alive is a watchdog nobody
   # can trust. Every pass states what it saw, so "it did nothing" and "it never
@@ -202,7 +216,9 @@ while ($true) {
   # the log line can never be delayed (or silenced) by a probe.
   $tick += 1
   WLog ("heartbeat #{0} mirror={1} [{2}] live={3} [{4}] strikes=({5}/{6})" -f $tick, $(if ($up['mirror']) {'up'} else {'DOWN'}), $script:MT, $(if ($up['live']) {'up'} else {'DOWN'}), $script:LT, $strikes['mirror'], $strikes['live'])
-  $script:MT = Format-Tape (Get-Health 8787)
-  $script:LT = Format-Tape (Get-Health 8788)
+  try {
+    $script:MT = Format-Tape (Get-Health 8787)
+    $script:LT = Format-Tape (Get-Health 8788)
+  } catch { WLog "tape refresh threw: $($_.Exception.Message)" }
   Start-Sleep -Seconds 60
 }
