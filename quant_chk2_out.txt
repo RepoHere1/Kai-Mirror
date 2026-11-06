@@ -1,0 +1,44 @@
+n=406 yes=217 no=189
+d_ws   (price@ws - floor): yes mean=-1.43 med=-1.11 | no mean=-1.64 med=-1.59
+d_ref  (refAvg  - floor): yes mean=-1.66 med=-1.21 | no mean=-1.79 med=-1.53
+move   (setTyp - refTyp): yes mean=NaN med=NaN | no mean=NaN med=NaN
+
+rank check: fraction of (yes,no) pairs with d_yes > d_no
+  gt=21606 eq=22 lt=19385 -> AUC=0.5271
+
+first 12 rows:
+KXXRP15M-26OCT301745-45 res=yes floor=1.2496 xWs=1.2494 refTyp=1.2493 d_ws=-1.60 d_ref=-2.13 move=NaN
+KXETH15M-26OCT301745-45 res=no floor=2238.33 xWs=2238.0100 refTyp=2237.9733 d_ws=-1.43 d_ref=-1.59 move=NaN
+KXBTC15M-26OCT301745-45 res=no floor=76707.32 xWs=76688.8200 refTyp=76684.5233 d_ws=-2.41 d_ref=-2.97 move=NaN
+KXHYPE15M-26OCT301745-45 res=no floor=89.9441 xWs=89.9000 refTyp=89.8833 d_ws=-4.90 d_ref=-6.76 move=NaN
+KXBTC15M-26OCT301800-00 res=no floor=76687.97 xWs=76675.8200 refTyp=76677.9833 d_ws=-1.58 d_ref=-1.30 move=NaN
+KXETH15M-26OCT301815-15 res=yes floor=2234.59 xWs=2234.3000 refTyp=2234.5433 d_ws=-1.30 d_ref=-0.21 move=NaN
+KXHYPE15M-26OCT301815-15 res=yes floor=88.9384 xWs=88.9100 refTyp=88.9200 d_ws=-3.19 d_ref=-2.07 move=NaN
+KXBTC15M-26OCT301830-30 res=no floor=76738.95 xWs=76720.0100 refTyp=76723.3900 d_ws=-2.47 d_ref=-2.03 move=NaN
+KXBTC15M-26OCT301845-45 res=yes floor=76715.94 xWs=76722.9700 refTyp=76709.9467 d_ws=0.92 d_ref=-0.78 move=NaN
+KXBTC15M-26OCT301900-00 res=no floor=76842.26 xWs=76823.3500 refTyp=76821.6100 d_ws=-2.46 d_ref=-2.69 move=NaN
+KXETH15M-26OCT301930-30 res=yes floor=2235.75 xWs=2234.7000 refTyp=2235.0033 d_ws=-4.70 d_ref=-3.34 move=NaN
+KXXRP15M-26OCT301930-30 res=yes floor=1.251 xWs=1.2505 refTyp=1.2506 d_ws=-4.00 d_ref=-3.20 move=NaN
+
+replication AUC=0.0544 n=406 npos=217 nneg=189
+first 6 d: -1.60 -1.43 -2.41 -4.90 -1.58 -1.30 ys: YnnnnY
+d at index of first 12 rows from the other calc: -1.60 -1.43 -2.41 -4.90 -1.58 -1.30 -3.19 -2.47 0.92 -2.46 -4.70 -4.00
+  move AUC=0.0000
+  BTC: n=117 AUC(d_ws)=0.5491 yesMean=-0.97 noMean=-1.22
+  ETH: n=113 AUC(d_ws)=0.4863 yesMean=-1.19 noMean=-1.03
+  XRP: n=93 AUC(d_ws)=0.5256 yesMean=-0.74 noMean=-0.95
+  HYPE: n=83 AUC(d_ws)=0.4848 yesMean=-3.56 noMean=-3.41
+
+first 12 rows:
+KXXRP15M-26OCT301745-45 res=yes floor=1.2496 xWs=1.2494 refTyp=1.2493 d_ws=-1.60 d_ref=-2.13 move=NaN
+KXETH15M-26OCT301745-45 res=no floor=2238.33 xWs=2238.0100 refTyp=2237.9733 d_ws=-1.43 d_ref=-1.59 move=NaN
+KXBTC15M-26OCT301745-45 res=no floor=76707.32 xWs=76688.8200 refTyp=76684.5233 d_ws=-2.41 d_ref=-2.97 move=NaN
+KXHYPE15M-26OCT301745-45 res=no floor=89.9441 xWs=89.9000 refTyp=89.8833 d_ws=-4.90 d_ref=-6.76 move=NaN
+KXBTC15M-26OCT301800-00 res=no floor=76687.97 xWs=76675.8200 refTyp=76677.9833 d_ws=-1.58 d_ref=-1.30 move=NaN
+KXETH15M-26OCT301815-15 res=yes floor=2234.59 xWs=2234.3000 refTyp=2234.5433 d_ws=-1.30 d_ref=-0.21 move=NaN
+KXHYPE15M-26OCT301815-15 res=yes floor=88.9384 xWs=88.9100 refTyp=88.9200 d_ws=-3.19 d_ref=-2.07 move=NaN
+KXBTC15M-26OCT301830-30 res=no floor=76738.95 xWs=76720.0100 refTyp=76723.3900 d_ws=-2.47 d_ref=-2.03 move=NaN
+KXBTC15M-26OCT301845-45 res=yes floor=76715.94 xWs=76722.9700 refTyp=76709.9467 d_ws=0.92 d_ref=-0.78 move=NaN
+KXBTC15M-26OCT301900-00 res=no floor=76842.26 xWs=76823.3500 refTyp=76821.6100 d_ws=-2.46 d_ref=-2.69 move=NaN
+KXETH15M-26OCT301930-30 res=yes floor=2235.75 xWs=2234.7000 refTyp=2235.0033 d_ws=-4.70 d_ref=-3.34 move=NaN
+KXXRP15M-26OCT301930-30 res=yes floor=1.251 xWs=1.2505 refTyp=1.2506 d_ws=-4.00 d_ref=-3.20 move=NaN

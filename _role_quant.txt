@@ -1,0 +1,30 @@
+You are a quantitative researcher for a crypto prediction-market bot. Work in C:\Users\darri\Kai-Mirror. You do NOT edit server.js or certainty.js (another engineer owns those). You only create NEW analysis scripts and NEW data files, and you write a report file.
+
+CONTEXT (already established, do not re-derive):
+- Kalshi crypto 15-minute markets, e.g. KXBTC15M-26NOV031330-30, settle YES if the 60-second average of the CF Benchmarks index (e.g. BRTI) before the close time is >= the 60-second average before the window start.
+- cf_results.json (C:\Users\darri\Kai-Mirror\cf_results.json) is a map ticker -> {result:'yes'|'no', status, title, yes_sub, no_sub, rules, floor, close}. `floor` is the PUBLISHED reference/strike (the window-start 60s average). `close` is ISO UTC close time. 407 markets.
+- state.json -> all_no.dry.closed_trades: 1759 trades with fields market_id, side ('NO'|'YES'), entry_price, exit_price, quantity, pnl, exit_reason, fair_at_entry, opened_at, closed_at, fee_paid.
+- Kalshi taker fee per contract per leg = 0.07 * p * (1-p). Settlement exit at $1.00 is fee-free.
+- NOTE: entry_price is the price PAID for the side (NO price for side NO), so market-implied P(NO wins) == entry_price for NO trades.
+
+YOUR TASKS:
+1. Fetch 1-minute OHLC candles for BTC-USD, ETH-USD, XRP-USD from the Coinbase public REST API (https://api.exchange.coinbase.com/products/<P>/candles?granularity=60&start=<iso>&end=<iso>, max 300 candles per request, paginate). Cover 2026-10-29T00:00:00Z through 2026-11-04T00:00:00Z. NOTE: HYPE is NOT on Coinbase — check whether it is; if not, try to find a public source (e.g. CoinGecko /api/v3/coins/hyperliquid/market_chart, or Hyperliquid's info API) and if you truly cannot get it, say so explicitly and continue with BTC/ETH/XRP only. Save raw candles to C:\Users\darri\Kai-Mirror\cand_<ASSET>.json (array of {t:<epoch_sec>, o,h,l,c,v}). Also SAVE the exact URL templates and response status so it is reproducible.
+2. Build the settlement model and validate it. For each market in cf_results.json and for each trade in that market:
+   - reference R = floor (published strike)
+   - at trade entry time t (opened_at) with tau = close - t seconds:
+     * if tau >= 60: the settlement window [close-60, close] lies wholly in the future. Under a driftless log-Brownian model with per-second vol sigma, the settlement 60s-average has (in log space) E[ln A] = ln X_{close-60} and Var[ln A] = sigma^2 * (tau - 60 + 60/3) = sigma^2 * (tau - 40).
+     * if tau < 60: part of the window is already realized. Use the actual 1-minute candles to compute the already-realized partial average, and the remaining tau seconds as a forward BM increment: Var = sigma^2 * tau/3.
+   - Estimate sigma (per-second log vol) from the coinbase 1-min candles over a trailing window (e.g. 30 min, 60 min, 120 min; test which is best) via realized variance of log returns.
+   - Compute P(YES) = Phi( (ln(A_hat) - ln(R)) / sigma_total ), where A_hat is the model's expected settlement value. Also compute P(YES) naively as Phi((ln(X_t) - ln(R))/(sigma*sqrt(tau))) for comparison.
+   - Measure and report the INDEX-vs-EXCHANGE BASIS: compare the exchange 60s-average at the window start against the published floor R, across all markets. Report mean/median/stdev of (floor / exchange_avg_start - 1) in basis points, per asset. This is a critical constant the bot needs.
+3. VALIDATION METRICS you must report (this is the point of the exercise):
+   - Brier score and log loss of P(YES) vs the actual settlement result, comparing: (a) the market-implied probability from Kalshi prices, (b) the naive spot-vs-strike model, (c) the 60s-average settlement model with the measured basis.
+   - Calibration curve (predicted bucket -> realized frequency) for each.
+   - AUC for each.
+   - Sample sizes. Do NOT claim significance without a binomial/standard error; report standard errors for every rate.
+   - The decisive test: restricted to trades where tau < 120s, how well does the model discriminate? (This is the "known-strike near expiry" claim.)
+   - Sweep an entry-price threshold: among all trades, if we only take a trade when (model P(side wins) - entry_price - fee) >= X, report n, realized win rate, realized EV, hold-to-settlement EV, and max drawdown for X in {0, 0.02, 0.05, 0.08, 0.12, 0.18}. Compare to the baseline of taking ALL 1759 trades.
+4. Write everything to C:\Users\darri\Kai-Mirror\QUANT_REPORT.md (clear tables, formulas, assumptions, standard errors, explicit limitations). Also leave the scripts you wrote in C:\Users\darri\Kai-Mirror\quant_*.js or quant_*.py.
+5. Be rigorous and honest. If a hypothesis fails, say it FAILED and show the numbers. Do not invent numbers. If the network is blocked, say so plainly.
+
+Report back: the measured basis per asset, the validation table (Brier/logloss/AUC for market-implied vs model), the threshold sweep results, and whether the known-strike 60s-average model beats the market-implied probability.

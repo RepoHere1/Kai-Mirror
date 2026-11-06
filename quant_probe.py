@@ -1,0 +1,12 @@
+import sqlite3, json, collections
+con = sqlite3.connect('trading.db')
+print('strategies:', [r for r in con.execute("select strategy, count(*) from trades group by strategy")])
+print('sides:', [r for r in con.execute("select side, count(*) from trades group by side")])
+print('all_no sample:', con.execute("select market_id, side, entry_price, opened from trades where strategy='all_no_markets' order by id desc limit 5").fetchall())
+print('all_no count by day:', [r for r in con.execute("select substr(opened,1,10), count(*) from trades where strategy='all_no_markets' group by 1")])
+print('markets all_no distinct:', con.execute("select count(distinct market_id) from trades where strategy='all_no_markets'").fetchone())
+con2 = sqlite3.connect('facts.db')
+print('facts tickers:', [r for r in con2.execute("select count(distinct ticker) from facts")])
+print('facts ts range:', con2.execute("select min(ts), max(ts) from facts").fetchone())
+print('facts sample 15M:', con2.execute("select ts,ticker,yes_bid,yes_ask,no_bid,no_ask,last_px,implied_yes,source from facts where ticker like '%15M%' order by ts desc limit 5").fetchall())
+print('n 15M facts:', con2.execute("select count(*) from facts where ticker like '%15M%'").fetchone())

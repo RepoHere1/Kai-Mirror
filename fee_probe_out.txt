@@ -1,0 +1,120 @@
+FILLS 209 TAKERS_WITH_FEE 106
+HYP A_quad_ceil4 99/106
+HYP B_quad_ceil6 6/106
+HYP C_min_ceil4 6/106
+--- all taker fills (p, qty, actual, raw, A, B) ---
+ROW {"p":0.007,"qty":4,"fee":0.002,"raw":0.00194628,"A":0.002,"B":0.001947,"okA":true,"okB":false,"side":"no"}
+ROW {"p":0.008,"qty":3,"fee":0.0017,"raw":0.00166656,"A":0.0017000000000000001,"B":0.0016669999999999999,"okA":true,"okB":false,"side":"yes"}
+ROW {"p":0.011,"qty":2,"fee":0.0016,"raw":0.00152306,"A":0.0016,"B":0.001524,"okA":true,"okB":false,"side":"no"}
+ROW {"p":0.018,"qty":3,"fee":0.0038,"raw":0.00371196,"A":0.0038,"B":0.003712,"okA":true,"okB":false,"side":"yes"}
+ROW {"p":0.019,"qty":8,"fee":0.0105,"raw":0.01043784,"A":0.0105,"B":0.010438,"okA":true,"okB":false,"side":"yes"}
+ROW {"p":0.02,"qty":1,"fee":0.0014,"raw":0.001372,"A":0.0014,"B":0.001372,"okA":true,"okB":false,"side":"no"}
+ROW {"p":0.02,"qty":1,"fee":0.0014,"raw":0.001372,"A":0.0014,"B":0.001372,"okA":true,"okB":false,"side":"no"}
+ROW {"p":0.023,"qty":0.01,"fee":0.00007,"raw":0.00001573,"A":0.0001,"B":0.000016,"okA":false,"okB":false,"side":"yes"}
+ROW {"p":0.023,"qty":0.01,"fee":0.00007,"raw":0.00001573,"A":0.0001,"B":0.000016,"okA":false,"okB":false,"side":"yes"}
+ROW {"p":0.025,"qty":1.98,"fee":0.0033,"raw":0.003378375,"A":0.0034000000000000002,"B":0.003379,"okA":false,"okB":false,"side":"yes"}
+ROW {"p":0.026,"qty":2,"fee":0.0036,"raw":0.00354536,"A":0.0036000000000000003,"B":0.0035459999999999997,"okA":true,"okB":false,"side":"yes"}
+ROW {"p":0.028,"qty":2,"fee":0.0039,"raw":0.00381024,"A":0.0039000000000000003,"B":0.0038109999999999997,"okA":true,"okB":false,"side":"yes"}
+ROW {"p":0.029,"qty":3,"fee":0.006,"raw":0.00591339,"A":0.006,"B":0.005914,"okA":true,"okB":false,"side":"yes"}
+ROW {"p":0.032,"qty":2,"fee":0.0044,"raw":0.00433664,"A":0.0044,"B":0.004337,"okA":true,"okB":false,"side":"yes"}
+ROW {"p":0.037,"qty":1,"fee":0.0025,"raw":0.00249417,"A":0.0025,"B":0.002495,"okA":true,"okB":false,"side":"no"}
+ROW {"p":0.037,"qty":2,"fee":0.005,"raw":0.00498834,"A":0.005,"B":0.0049889999999999995,"okA":true,"okB":false,"side":"yes"}
+ROW {"p":0.038,"qty":2,"fee":0.0052,"raw":0.00511784,"A":0.005200000000000001,"B":0.005118,"okA":true,"okB":false,"side":"no"}
+ROW {"p":0.043,"qty":2,"fee":0.0058,"raw":0.00576114,"A":0.0058000000000000005,"B":0.005762,"okA":true,"okB":false,"side":"no"}
+ROW {"p":0.043,"qty":2,"fee":0.0058,"raw":0.00576114,"A":0.0058000000000000005,"B":0.005762,"okA":true,"okB":false,"side":"yes"}
+ROW {"p":0.046,"qty":1,"fee":0.0031,"raw":0.00307188,"A":0.0031000000000000003,"B":0.003072,"okA":true,"okB":false,"side":"yes"}
+ROW {"p":0.046,"qty":1,"fee":0.0031,"raw":0.00307188,"A":0.0031000000000000003,"B":0.003072,"okA":true,"okB":false,"side":"yes"}
+ROW {"p":0.046,"qty":1,"fee":0.0031,"raw":0.00307188,"A":0.0031000000000000003,"B":0.003072,"okA":true,"okB":false,"side":"yes"}
+ROW {"p":0.046,"qty":2,"fee":0.0062,"raw":0.00614376,"A":0.006200000000000001,"B":0.006144,"okA":true,"okB":false,"side":"yes"}
+ROW {"p":0.046,"qty":2,"fee":0.0062,"raw":0.00614376,"A":0.006200000000000001,"B":0.006144,"okA":true,"okB":false,"side":"yes"}
+ROW {"p":0.046,"qty":5,"fee":0.0153,"raw":0.0153594,"A":0.0154,"B":0.015359999999999999,"okA":false,"okB":false,"side":"yes"}
+ROW {"p":0.046,"qty":3,"fee":0.0093,"raw":0.00921564,"A":0.009300000000000001,"B":0.009216,"okA":true,"okB":false,"side":"yes"}
+ROW {"p":0.047,"qty":1,"fee":0.0032,"raw":0.00313537,"A":0.0032,"B":0.003136,"okA":true,"okB":false,"side":"yes"}
+ROW {"p":0.047,"qty":3,"fee":0.0095,"raw":0.00940611,"A":0.0095,"B":0.009407,"okA":true,"okB":false,"side":"yes"}
+ROW {"p":0.048,"qty":2,"fee":0.0064,"raw":0.00639744,"A":0.0064,"B":0.006398,"okA":true,"okB":false,"side":"no"}
+ROW {"p":0.049,"qty":2,"fee":0.0066,"raw":0.00652386,"A":0.0066,"B":0.006523999999999999,"okA":true,"okB":false,"side":"no"}
+ROW {"p":0.05,"qty":2,"fee":0.0067,"raw":0.00665,"A":0.0067,"B":0.00665,"okA":true,"okB":false,"side":"yes"}
+ROW {"p":0.05,"qty":1,"fee":0.0034,"raw":0.003325,"A":0.0034000000000000002,"B":0.003325,"okA":true,"okB":false,"side":"no"}
+ROW {"p":0.05,"qty":1,"fee":0.0033,"raw":0.003325,"A":0.0034000000000000002,"B":0.003325,"okA":false,"okB":false,"side":"no"}
+ROW {"p":0.12,"qty":1.96,"fee":0.0145,"raw":0.01448832,"A":0.0145,"B":0.014489,"okA":true,"okB":false,"side":"yes"}
+ROW {"p":0.13,"qty":7.25,"fee":0.0574,"raw":0.05739825,"A":0.0574,"B":0.057399,"okA":true,"okB":false,"side":"yes"}
+ROW {"p":0.34,"qty":2.65,"fee":0.0417,"raw":0.0416262,"A":0.0417,"B":0.041627,"okA":true,"okB":false,"side":"no"}
+ROW {"p":0.36,"qty":0.63,"fee":0.0102,"raw":0.01016064,"A":0.0102,"B":0.010161,"okA":true,"okB":false,"side":"yes"}
+ROW {"p":0.4,"qty":3,"fee":0.0504,"raw":0.0504,"A":0.0504,"B":0.0504,"okA":true,"okB":true,"side":"yes"}
+ROW {"p":0.45,"qty":11,"fee":0.1906,"raw":0.190575,"A":0.19060000000000002,"B":0.190575,"okA":true,"okB":false,"side":"yes"}
+ROW {"p":0.5,"qty":0.01,"fee":0.0002,"raw":0.000175,"A":0.0002,"B":0.000175,"okA":true,"okB":false,"side":"yes"}
+ROW {"p":0.5,"qty":0.01,"fee":0.0002,"raw":0.000175,"A":0.0002,"B":0.000175,"okA":true,"okB":false,"side":"yes"}
+ROW {"p":0.51,"qty":4,"fee":0.07,"raw":0.069972,"A":0.07,"B":0.06997199999999999,"okA":true,"okB":false,"side":"yes"}
+ROW {"p":0.51,"qty":0.01,"fee":0.0002,"raw":0.00017493,"A":0.0002,"B":0.000175,"okA":true,"okB":false,"side":"yes"}
+ROW {"p":0.51,"qty":0.01,"fee":0.0001,"raw":0.00017493,"A":0.0002,"B":0.000175,"okA":false,"okB":false,"side":"yes"}
+ROW {"p":0.51,"qty":4,"fee":0.07,"raw":0.069972,"A":0.07,"B":0.06997199999999999,"okA":true,"okB":false,"side":"no"}
+ROW {"p":0.52,"qty":2,"fee":0.035,"raw":0.034944,"A":0.035,"B":0.034943999999999996,"okA":true,"okB":false,"side":"no"}
+ROW {"p":0.52,"qty":5,"fee":0.0874,"raw":0.08736,"A":0.0874,"B":0.08736,"okA":true,"okB":false,"side":"yes"}
+ROW {"p":0.52,"qty":4,"fee":0.0699,"raw":0.069888,"A":0.0699,"B":0.06988799999999999,"okA":true,"okB":false,"side":"no"}
+ROW {"p":0.54,"qty":3,"fee":0.0522,"raw":0.052164,"A":0.0522,"B":0.052163999999999995,"okA":true,"okB":false,"side":"no"}
+ROW {"p":0.54,"qty":3,"fee":0.0522,"raw":0.052164,"A":0.0522,"B":0.052163999999999995,"okA":true,"okB":false,"side":"no"}
+ROW {"p":0.55,"qty":13,"fee":0.2253,"raw":0.225225,"A":0.2253,"B":0.22522499999999998,"okA":true,"okB":false,"side":"yes"}
+ROW {"p":0.56,"qty":5,"fee":0.0863,"raw":0.08624,"A":0.0863,"B":0.08624,"okA":true,"okB":false,"side":"yes"}
+ROW {"p":0.56,"qty":4,"fee":0.069,"raw":0.068992,"A":0.069,"B":0.068992,"okA":true,"okB":false,"side":"no"}
+ROW {"p":0.56,"qty":4,"fee":0.069,"raw":0.068992,"A":0.069,"B":0.068992,"okA":true,"okB":false,"side":"no"}
+ROW {"p":0.56,"qty":8,"fee":0.138,"raw":0.137984,"A":0.138,"B":0.137984,"okA":true,"okB":false,"side":"no"}
+ROW {"p":0.57,"qty":3,"fee":0.0515,"raw":0.051471,"A":0.051500000000000004,"B":0.051470999999999996,"okA":true,"okB":false,"side":"yes"}
+ROW {"p":0.57,"qty":4,"fee":0.0687,"raw":0.068628,"A":0.0687,"B":0.068628,"okA":true,"okB":false,"side":"no"}
+ROW {"p":0.58,"qty":8,"fee":0.1365,"raw":0.136416,"A":0.1365,"B":0.13641599999999998,"okA":true,"okB":false,"side":"yes"}
+ROW {"p":0.6,"qty":4,"fee":0.0672,"raw":0.0672,"A":0.06720000000000001,"B":0.0672,"okA":true,"okB":true,"side":"yes"}
+ROW {"p":0.6,"qty":9,"fee":0.1512,"raw":0.1512,"A":0.1512,"B":0.1512,"okA":true,"okB":true,"side":"yes"}
+ROW {"p":0.61,"qty":17,"fee":0.2832,"raw":0.283101,"A":0.2832,"B":0.283101,"okA":true,"okB":false,"side":"yes"}
+ROW {"p":0.62,"qty":3.96,"fee":0.0654,"raw":0.06530832,"A":0.0654,"B":0.06530899999999999,"okA":true,"okB":false,"side":"yes"}
+ROW {"p":0.64,"qty":4,"fee":0.0646,"raw":0.064512,"A":0.0646,"B":0.064512,"okA":true,"okB":false,"side":"yes"}
+ROW {"p":0.64,"qty":5,"fee":0.0807,"raw":0.08064,"A":0.08070000000000001,"B":0.08063999999999999,"okA":true,"okB":false,"side":"yes"}
+ROW {"p":0.65,"qty":5,"fee":0.0797,"raw":0.079625,"A":0.07970000000000001,"B":0.079625,"okA":true,"okB":false,"side":"yes"}
+ROW {"p":0.66,"qty":5,"fee":0.0786,"raw":0.07854,"A":0.0786,"B":0.07854,"okA":true,"okB":false,"side":"yes"}
+ROW {"p":0.67,"qty":3,"fee":0.0465,"raw":0.046431,"A":0.0465,"B":0.046431,"okA":true,"okB":false,"side":"yes"}
+ROW {"p":0.68,"qty":1,"fee":0.0153,"raw":0.015232,"A":0.015300000000000001,"B":0.015231999999999999,"okA":true,"okB":false,"side":"no"}
+ROW {"p":0.69,"qty":14,"fee":0.2097,"raw":0.209622,"A":0.2097,"B":0.209622,"okA":true,"okB":false,"side":"no"}
+ROW {"p":0.73,"qty":7,"fee":0.0966,"raw":0.096579,"A":0.0966,"B":0.096579,"okA":true,"okB":false,"side":"yes"}
+ROW {"p":0.73,"qty":15,"fee":0.207,"raw":0.206955,"A":0.20700000000000002,"B":0.206955,"okA":true,"okB":false,"side":"no"}
+ROW {"p":0.74,"qty":9.6,"fee":0.1293,"raw":0.1292928,"A":0.1293,"B":0.129293,"okA":true,"okB":false,"side":"yes"}
+ROW {"p":0.75,"qty":1.4,"fee":0.0184,"raw":0.018375,"A":0.0184,"B":0.018375,"okA":true,"okB":false,"side":"yes"}
+ROW {"p":0.78,"qty":11,"fee":0.1322,"raw":0.132132,"A":0.1322,"B":0.132132,"okA":true,"okB":false,"side":"yes"}
+ROW {"p":0.78,"qty":6,"fee":0.0721,"raw":0.072072,"A":0.0721,"B":0.072072,"okA":true,"okB":false,"side":"yes"}
+ROW {"p":0.79,"qty":2,"fee":0.0233,"raw":0.023226,"A":0.0233,"B":0.023226,"okA":true,"okB":false,"side":"yes"}
+ROW {"p":0.8,"qty":9.34,"fee":0.1047,"raw":0.104608,"A":0.1047,"B":0.10460799999999999,"okA":true,"okB":false,"side":"yes"}
+ROW {"p":0.8,"qty":17,"fee":0.1904,"raw":0.1904,"A":0.1904,"B":0.19039999999999999,"okA":true,"okB":true,"side":"yes"}
+ROW {"p":0.81,"qty":2,"fee":0.0216,"raw":0.021546,"A":0.0216,"B":0.021546,"okA":true,"okB":false,"side":"yes"}
+ROW {"p":0.81,"qty":1,"fee":0.0108,"raw":0.010773,"A":0.0108,"B":0.010773,"okA":true,"okB":false,"side":"yes"}
+ROW {"p":0.82,"qty":1,"fee":0.0104,"raw":0.010332,"A":0.010400000000000001,"B":0.010332,"okA":true,"okB":false,"side":"yes"}
+ROW {"p":0.82,"qty":2,"fee":0.0207,"raw":0.020664,"A":0.0207,"B":0.020664,"okA":true,"okB":false,"side":"no"}
+ROW {"p":0.82,"qty":8,"fee":0.0827,"raw":0.082656,"A":0.08270000000000001,"B":0.082656,"okA":true,"okB":false,"side":"yes"}
+ROW {"p":0.82,"qty":3.66,"fee":0.0379,"raw":0.03781512,"A":0.0379,"B":0.037815999999999995,"okA":true,"okB":false,"side":"yes"}
+ROW {"p":0.83,"qty":2,"fee":0.0198,"raw":0.019754,"A":0.0198,"B":0.019754,"okA":true,"okB":false,"side":"yes"}
+ROW {"p":0.83,"qty":2,"fee":0.0198,"raw":0.019754,"A":0.0198,"B":0.019754,"okA":true,"okB":false,"side":"yes"}
+ROW {"p":0.83,"qty":1,"fee":0.0099,"raw":0.009877,"A":0.0099,"B":0.009877,"okA":true,"okB":false,"side":"yes"}
+ROW {"p":0.84,"qty":0.01,"fee":0.0001,"raw":0.00009408,"A":0.0001,"B":0.00009499999999999999,"okA":true,"okB":false,"side":"yes"}
+ROW {"p":0.84,"qty":1.99,"fee":0.0188,"raw":0.01872192,"A":0.0188,"B":0.018722,"okA":true,"okB":false,"side":"yes"}
+ROW {"p":0.85,"qty":2,"fee":0.0179,"raw":0.01785,"A":0.0179,"B":0.017849999999999998,"okA":true,"okB":false,"side":"yes"}
+ROW {"p":0.85,"qty":2,"fee":0.0179,"raw":0.01785,"A":0.0179,"B":0.017849999999999998,"okA":true,"okB":false,"side":"no"}
+ROW {"p":0.86,"qty":2,"fee":0.0169,"raw":0.016856,"A":0.016900000000000002,"B":0.016856,"okA":true,"okB":false,"side":"yes"}
+ROW {"p":0.86,"qty":2,"fee":0.0169,"raw":0.016856,"A":0.016900000000000002,"B":0.016856,"okA":true,"okB":false,"side":"yes"}
+ROW {"p":0.89,"qty":1.82,"fee":0.0125,"raw":0.01247246,"A":0.0125,"B":0.012473,"okA":true,"okB":false,"side":"yes"}
+ROW {"p":0.89,"qty":0.18,"fee":0.0013,"raw":0.00123354,"A":0.0013000000000000002,"B":0.0012339999999999999,"okA":true,"okB":false,"side":"yes"}
+ROW {"p":0.89,"qty":2,"fee":0.0138,"raw":0.013706,"A":0.013800000000000002,"B":0.013706,"okA":true,"okB":false,"side":"yes"}
+ROW {"p":0.9,"qty":1,"fee":0.0063,"raw":0.0063,"A":0.0063,"B":0.0063,"okA":true,"okB":true,"side":"yes"}
+ROW {"p":0.903,"qty":1,"fee":0.0062,"raw":0.00613137,"A":0.006200000000000001,"B":0.006131999999999999,"okA":true,"okB":false,"side":"yes"}
+ROW {"p":0.906,"qty":3,"fee":0.0179,"raw":0.01788444,"A":0.0179,"B":0.017884999999999998,"okA":true,"okB":false,"side":"no"}
+ROW {"p":0.907,"qty":2,"fee":0.0119,"raw":0.01180914,"A":0.0119,"B":0.01181,"okA":true,"okB":false,"side":"no"}
+ROW {"p":0.934,"qty":1,"fee":0.0044,"raw":0.00431508,"A":0.0044,"B":0.0043159999999999995,"okA":true,"okB":false,"side":"yes"}
+ROW {"p":0.94,"qty":4,"fee":0.0158,"raw":0.015792,"A":0.0158,"B":0.015792,"okA":true,"okB":false,"side":"no"}
+ROW {"p":0.966,"qty":1,"fee":0.0023,"raw":0.00229908,"A":0.0023,"B":0.0023,"okA":true,"okB":true,"side":"no"}
+ROW {"p":0.98,"qty":38.78,"fee":0.0533,"raw":0.05320616,"A":0.0533,"B":0.053207,"okA":true,"okB":false,"side":"no"}
+ROW {"p":0.98,"qty":896.41,"fee":1.2298,"raw":1.22987452,"A":1.2299,"B":1.229875,"okA":false,"okB":false,"side":"no"}
+ROW {"p":0.98,"qty":5,"fee":0.0069,"raw":0.00686,"A":0.006900000000000001,"B":0.00686,"okA":true,"okB":false,"side":"yes"}
+--- lane price table (qty=1) ---
+LANE p=0.9 raw=0.006300000 ceil4=0.006300000 ceil6=0.006300000 MIN_ceil4=0.007000000 OLD_cent_ceil=0.01
+LANE p=0.92 raw=0.005152000 ceil4=0.005200000 ceil6=0.005152000 MIN_ceil4=0.005600000 OLD_cent_ceil=0.01
+LANE p=0.94 raw=0.003948000 ceil4=0.004000000 ceil6=0.003948000 MIN_ceil4=0.004200000 OLD_cent_ceil=0.01
+LANE p=0.95 raw=0.003325000 ceil4=0.003400000 ceil6=0.003325000 MIN_ceil4=0.003500000 OLD_cent_ceil=0.01
+LANE p=0.96 raw=0.002688000 ceil4=0.002700000 ceil6=0.002688000 MIN_ceil4=0.002800000 OLD_cent_ceil=0.01
+LANE p=0.97 raw=0.002037000 ceil4=0.002100000 ceil6=0.002037000 MIN_ceil4=0.002100000 OLD_cent_ceil=0.01
+LANE p=0.98 raw=0.001372000 ceil4=0.001400000 ceil6=0.001372000 MIN_ceil4=0.001400000 OLD_cent_ceil=0.01
+LANE p=0.99 raw=0.000693000 ceil4=0.000700000 ceil6=0.000693000 MIN_ceil4=0.000700000 OLD_cent_ceil=0.01

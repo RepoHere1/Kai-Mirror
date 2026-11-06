@@ -1,0 +1,5 @@
+trades 1767 markets 407 noMeta 8 noBar 1 negTau 10
+BTC: n=117 basis mean=1.16bps se=0.09 med=1.16 sd=0.98 | exchange-proxy outcome acc=94.9%
+ETH: n=113 basis mean=1.12bps se=0.12 med=1.08 sd=1.25 | exchange-proxy outcome acc=95.6%
+XRP: n=93 basis mean=1.41bps se=0.16 med=1.34 sd=1.57 | exchange-proxy outcome acc=90.3%
+HYPE: n=83 basis mean=3.69bps se=0.38 med=3.58 sd=3.43 | exchange-proxy outcome acc=92.8%

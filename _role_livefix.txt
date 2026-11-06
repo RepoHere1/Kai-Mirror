@@ -1,0 +1,23 @@
+You are a systems engineer diagnosing a stalled live trading bot. Work primarily in C:\Users\darri\Kai-LIVE (and read C:\Users\darri\Kai-Mirror as reference). You do NOT edit certainty.js and you do NOT edit the certainty-lane logic in server.js (another engineer owns the strategy). You MAY make small, safe, surgical fixes to the balance/tick-loop/spot-history/facts-freshness plumbing in Kai-LIVE\server.js, but ONLY where the fix is unambiguous, and you must show the exact diff.
+
+CONTEXT (already established, do not re-derive):
+- Kai-LIVE\server.js is a large Node/Express app with a trading engine. Kai-Mirror\server.js is a near-identical sibling that presumably works; diff them.
+- The LIVE server (pid ~14008, listening on 127.0.0.1:8788) has these reported problems:
+  (a) http://127.0.0.1:8788/api/health reports live_balance: null and facts with good_pct ~1.86% and last_good_ms_ago ~988439 (i.e. almost all recorded facts are REJECTED as stale).
+  (b) http://127.0.0.1:8788/api/live and /api/facts TIME OUT (>10s), while /api/health and /api/strategies respond. /api/stream is a long-lived SSE stream so a timeout there is expected and not a bug.
+  (c) /api/certainty-scan returns candidates with notes "no realised vol" for all assets -> the lane has no spot history to compute volatility from.
+  (d) The engine tick loop appears STUCK: /api/strategies showed heartbeats for btc_updown and all_no_markets updating (18:55) while eth_updown/xrp_updown/hype_updown were stuck at 09:33.
+  (e) Balance API probes (kalshi /portfolio/balance) appeared to hang or return HTTP 429.
+- C:\Users\darri\Kai-LIVE\facts.db and C:\Users\darri\Kai-Mirror\facts.db contain tables `facts` and `cert` (both cert tables are EMPTY - 0 rows). facts.db in Kai-Mirror has a stale -journal file, which may be locking the DB.
+- C:\Users\darri\Kai-LIVE\coinbase_ws.js is the Coinbase websocket feed.
+
+YOUR TASKS:
+1. Diagnose, with evidence, the root cause of EACH of (a)-(e). Use logs (find the server's stdout/stderr log files), process inspection, and direct curl/node probes with explicit timeouts. Show the actual commands and their output in your report.
+2. For the tick loop: find the code that runs the per-lane engine tick and determine exactly which lane blocks and why (awaited promise? infinite retry? rate-limit backoff? unhandled rejection that stops the loop?). Prove it. Then FIX it: each lane must be isolated so one hung lane cannot stall the others, and a single pass must be bounded by a hard timeout. Compare against Kai-Mirror's implementation and adopt whatever is more robust.
+3. For the balance path: find why the live balance read returns null/hangs. Determine whether it is a 429 rate limit, a wrong host, a missing auth header, or an unhandled rejection swallowing the error. FIX it so a failed balance read returns a structured error and does NOT hang, and so the bot refuses to place orders when cash is unknown (fail-closed, not fail-open).
+4. For facts freshness: find the freshness/validity rule that is rejecting 98% of facts (likely a MIN_SPREAD or staleness threshold), determine whether it is correct or a bug, and make it sane WITHOUT weakening the rule so much that it admits garbage. Report what fraction of facts become good after the fix.
+5. For spot history: determine why the certainty lane has no realised vol (perSecondVol returning null). Likely the spot buffer is not being populated from the websocket, or points are stored with a bad timestamp unit (ms vs s), or the buffer is never persisted. FIX so that a trailing realised-vol estimate is available from the live feed, with a documented minimum sample requirement.
+6. Write a detailed report to C:\Users\darri\Kai-LIVE\LIVE_DIAGNOSIS.md containing: root cause per issue, the exact diffs you made, how you verified each fix, and any risk you introduced.
+7. IMPORTANT: after making changes, RESTART the live server and verify /api/health, /api/live, /api/facts, /api/strategies and /api/certainty-scan all respond within 5 seconds and show live_balance non-null, the tick heartbeats advancing for ALL lanes, and realised vol present. Show the before/after output. If you cannot restart safely, explain precisely how to and leave the verified commands.
+
+Be rigorous and honest: distinguish what you FIXED and verified from what you diagnosed but could not fix. Never fabricate output.
