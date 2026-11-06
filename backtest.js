@@ -71,7 +71,9 @@ const BACKOFF_CAP_MS = 60000;
 const LISTING_PAGE_LIMIT = 1000;
 const MAX_BATCH_TICKERS = 100;
 const BATCH_CANDLE_BUDGET = 9000; // Kalshi hard limit is 10000 (tickers x minutes)
-const SPOT_LOOKBACK_SEC = 26 * 3600; // markets live up to ~25h; decisions need spot from before open
+// Spot coverage starts this long before the window. Must cover the longest market life in the window
+// (observed: 10140 min = 7.04 days) so that every market is replayed from its own open.
+const SPOT_LOOKBACK_SEC = 8 * 86400;
 const SPOT_MAX_FILL_MIN = 3; // forward-fill at most 3 missing 1m Coinbase candles
 const CB_CHUNK_MIN = 300;
 const LISTING_TTL_MS = 15 * 60 * 1000; // for day-chunks that may still change
@@ -360,22 +362,40 @@ async function ensureCandles(series, markets, log) {
 
 let lastBatchError = null;
 
+// One batch = one group of tickers over [gs, ge]. Kalshi caps tickers x minutes per request, so a
+// window that is too long for the group is split into overlapping pieces (1 minute overlap) and the
+// candles are merged per ticker, de-duplicated by end_period_ts.
 async function fetchCandleBatch(series, group, gs, ge) {
+  const perRequestMin = Math.floor(BATCH_CANDLE_BUDGET / group.length) - 2;
+  const step = (perRequestMin - 1) * 60;
+  const merged = new Map(); // ticker -> Map(end_ts -> compact candle)
+  for (const m of group) merged.set(m.ticker, new Map());
   const tickers = group.map(m => encodeURIComponent(m.ticker)).join(',');
-  const url = `${KALSHI_BASE}/markets/candlesticks?market_tickers=${tickers}&start_ts=${gs}&end_ts=${ge}&period_interval=1`;
-  let json;
-  try {
-    json = await getJson('kalshi', url);
-  } catch (err) {
-    httpStats.failed_requests++;
-    lastBatchError = `${series} n=${group.length} window=${(ge - gs) / 60}min: ${String(err.message).slice(0, 220)}`;
-    return false;
+  for (let ps = gs; ps < ge; ps += step) {
+    const pe = Math.min(ge, ps + perRequestMin * 60);
+    const url = `${KALSHI_BASE}/markets/candlesticks?market_tickers=${tickers}&start_ts=${ps}&end_ts=${pe}&period_interval=1`;
+    let json;
+    try {
+      json = await getJson('kalshi', url);
+    } catch (err) {
+      httpStats.failed_requests++;
+      lastBatchError = `${series} n=${group.length} window=${(pe - ps) / 60}min: ${String(err.message).slice(0, 220)}`;
+      return false;
+    }
+    const got = new Map();
+    for (const entry of (json && json.markets) || []) got.set(entry.market_ticker, entry.candlesticks || []);
+    if (got.size < group.length) httpStats.batch_missing_entries += group.length - got.size;
+    for (const m of group) {
+      const dest = merged.get(m.ticker);
+      for (const c of got.get(m.ticker) || []) {
+        const cc = compactCandle(c);
+        if (cc) dest.set(cc[0], cc);
+      }
+    }
+    if (ps + step >= ge) break;
   }
-  const got = new Map();
-  for (const entry of (json && json.markets) || []) got.set(entry.market_ticker, entry.candlesticks || []);
-  if (got.size < group.length) httpStats.batch_missing_entries += group.length - got.size;
   for (const m of group) {
-    const candles = (got.get(m.ticker) || []).map(compactCandle).filter(Boolean);
+    const candles = [...merged.get(m.ticker).values()].sort((a, b) => a[0] - b[0]);
     const file = candleFile(series, m.ticker);
     const tmp = file + '.tmp';
     fs.writeFileSync(tmp, JSON.stringify({ ticker: m.ticker, series, start: gs, end: ge, candles }));
@@ -651,7 +671,13 @@ async function runBacktest(opts = {}) {
   const windowEnd = Math.floor(endSec / 3600) * 3600;
   const windowStart = windowEnd - Math.round(days * 86400);
 
-  const strategies = loadStrategies();
+  let strategies = loadStrategies();
+  if (Array.isArray(opts.only) && opts.only.length) {
+    const want = new Set(opts.only);
+    strategies = strategies.filter(s => want.has(s.name));
+    const missing = [...want].filter(n => !strategies.some(s => s.name === n));
+    if (missing.length) throw new Error(`unknown strategy name(s): ${missing.join(', ')}`);
+  }
   log(`strategies: ${strategies.map(s => s.name).join(', ')}`);
   log(`window ${iso(windowStart)} -> ${iso(windowEnd)} (${days} days)`);
   const timings = {};
@@ -722,7 +748,7 @@ async function runBacktest(opts = {}) {
     acc: newStrategyAcc(),
   }));
   const minutes = { kalshi_exact: 0, kalshi_carried: 0, modeled: 0 };
-  const skipped = { spot_missing: 0 };
+  const skipped = { outside_spot_coverage: 0, spot_gap: 0 };
   let candlePointsLoaded = 0;
   let marketsReplayed = 0;
   let marketsWithExact = 0;
@@ -747,7 +773,7 @@ async function runBacktest(opts = {}) {
       while (cp < candles.length && candles[cp][0] <= T) last = candles[cp++];
       const i = T / 60 - 1 - sa.base; // index of the 1m candle starting at T-60s (spot as of T)
       if (i < SIGMA_LONG_MIN || i >= sa.n) {
-        skipped.spot_missing++;
+        skipped.outside_spot_coverage++;
         continue;
       }
       const S = sa.ff[i];
@@ -755,7 +781,7 @@ async function runBacktest(opts = {}) {
       const sd60 = sdReturns(sa.lr, i, SIGMA_LONG_MIN);
       const move5 = isNum(sa.ff[i - 5]) && isNum(S) ? Math.log(S / sa.ff[i - 5]) : NaN;
       if (!isNum(S) || !isNum(sd15) || !isNum(sd60) || !isNum(move5)) {
-        skipped.spot_missing++;
+        skipped.spot_gap++;
         continue;
       }
       const sigma = sd15 / Math.sqrt(60);
@@ -1012,8 +1038,10 @@ async function runBacktest(opts = {}) {
     strategies: strategyResults,
   };
 
-  fs.writeFileSync(RESULTS_PATH, JSON.stringify(results, null, 2));
-  log(`wrote ${RESULTS_PATH} in ${results.data.runtime_sec}s`);
+  if (Array.isArray(opts.only) && opts.only.length) results.subset = opts.only;
+  const outPath = typeof opts.outPath === 'string' && opts.outPath ? opts.outPath : RESULTS_PATH;
+  fs.writeFileSync(outPath, JSON.stringify(results, null, 2));
+  log(`wrote ${outPath} in ${results.data.runtime_sec}s`);
   return results;
 }
 
@@ -1058,6 +1086,8 @@ function parseArgs(argv) {
     maxEntries: DEFAULT_MAX_ENTRIES,
     carryMaxMin: DEFAULT_CARRY_MAX_MIN,
     endSec: null,
+    only: null,
+    outPath: null,
     bySeries: false,
   };
   for (let i = 1; i < argv.length; i++) {
@@ -1069,6 +1099,8 @@ function parseArgs(argv) {
     else if (key === '--max-entries') args.maxEntries = Number(val());
     else if (key === '--carry-max-min') args.carryMaxMin = Number(val());
     else if (key === '--end') args.endSec = Math.floor(Date.parse(val()) / 1000);
+    else if (key === '--only') args.only = String(val()).split(',').map(x => x.trim()).filter(Boolean);
+    else if (key === '--out') args.outPath = path.resolve(String(val()));
     else if (key === '--by-series') args.bySeries = true;
   }
   return args;
@@ -1144,6 +1176,8 @@ async function main() {
       maxEntries: args.maxEntries,
       carryMaxMin: args.carryMaxMin,
       endSec: args.endSec,
+      only: args.only,
+      outPath: args.outPath,
       log: msg => process.stderr.write(msg + '\n'),
     });
     printTable(res, args.bySeries);
@@ -1153,7 +1187,7 @@ async function main() {
     console.log(JSON.stringify(summary(), null, 2));
     return;
   }
-  console.error('usage: node backtest.js run [--days 14] [--max-entries 1] [--carry-max-min 15] [--end ISO] [--by-series]\n       node backtest.js summary');
+  console.error('usage: node backtest.js run [--days 14] [--max-entries 1] [--carry-max-min 15] [--end ISO]\n                         [--only name1,name2] [--out file.json] [--by-series]\n       node backtest.js summary');
   process.exitCode = 2;
 }
 
