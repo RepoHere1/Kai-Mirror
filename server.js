@@ -32,6 +32,7 @@ const WebSocket = require('ws');
 
 const sqlite3 = require('sqlite3').verbose();
 const kalshi = require('./kalshi');
+const holdRule = require('./hold_rule');
 const kilo = require('./kilo');
 const brain = require('./brain_dry');
 const perp = require('./perp_feed');
@@ -1423,9 +1424,8 @@ function dryAccountPayload() {
   };
 }
 
-// OPERATOR RULE (2026-11-06): markets are unrestricted; a TRADE must close within
-// 30 days of opening. Entries whose market closes further out are refused.
-const TRADE_MAX_HOLD_MS = 30 * 24 * 3600 * 1000;
+// OPERATOR RULE (2026-11-06): the 30-day max-hold law now lives in
+// hold_rule.js (fail-closed) and is enforced at every booking site.
 // ---------------------------------------------------------------------------
 // MAKER-EDGE LAYER (2026-11-06, operator order). Lanes never lift the ask: they
 // rest a bid at their own level through FILLSIM. A position exists only when a
@@ -1500,7 +1500,11 @@ function makerPayload() {
   return { generated_at: new Date().toISOString(), kill_min_n: minN, maker_mode: state.runtime.lane_maker !== false, fill_realism: FILLSIM.stats(), lanes };
 }
 function openDryPosition(lane, q, side, price, fair, edge, sigma, opts) {
-  if (q && q.close_time && (new Date(q.close_time).getTime() - Date.now()) > TRADE_MAX_HOLD_MS) { const lh = laneState(lane.name); lh.skips++; lh.last_skip = 'trade would hold over 30 days (closes ' + q.close_time + ')'; return null; }
+  // HOLD RULE (operator order 2026-11-06): entry needs a close_time that
+  // settles within 30 days. Fail-closed: missing/invalid close_time blocks
+  // entry (the old check silently skipped when close_time was absent).
+  const holdOk = holdRule.entryAllowed(q && q.close_time, Date.now());
+  if (!holdOk.ok) { const lh = laneState(lane.name); lh.skips++; lh.last_skip = 'hold rule: ' + holdOk.reason; return null; }
   // OPERATOR ORDER 2026-11-04: every order is at most $0.50. The old
   // Math.max(1, Math.floor(clip/price)) forced qty=1 whenever the price ALONE
   // exceeded the cap - that is exactly how a $0.61 KXBTC15M YES slipped through
@@ -1728,6 +1732,20 @@ async function markDryPositions() {
             pos.quote = { bid, ask: pos.side === 'YES' ? q.yes_ask : q.no_ask, close_time: q.close_time, status: q.status, updated: q.updated };
             const heldMs = Date.now() - new Date(pos.opened).getTime();
             if (heldMs < Number(state.runtime.min_hold_sec || 45) * 1000) continue;
+
+            // HOLD RULE (operator order 2026-11-06): a position open 30 days is
+            // force-exited. Sell only at or above entry; otherwise hold and
+            // retry on the next tick. Manual closes and stop-losses are
+            // separate exits and never satisfy the rule.
+            if (holdRule.forcedExitDue(pos.opened, Date.now())) {
+              if (holdRule.forcedExitPriceOk(bid, pos.entry_price)) {
+                log('hold_rule_forced_exit', { strategy: pos.strategy, market: pos.market_id, bid, entry: pos.entry_price, opened: pos.opened });
+                closeDryPosition(pos, bid, 'hold_rule_30d');
+              } else {
+                pos.hold_rule_waiting = { since: pos.hold_rule_waiting ? pos.hold_rule_waiting.since : new Date().toISOString(), bid, entry: pos.entry_price };
+              }
+              continue;
+            }
 
             // (No high-water tracking: the trail stop it fed is exterminated.)
 
@@ -2469,7 +2487,10 @@ async function getAllTradableSeries() {
 // ---------------------------------------------------------------------------
 function createAllNoEntry(market_id, entry_price, quantity, fair_at_entry, edge, kelly, stop_loss, take_profit, confidence, expiration, extra) {
   // OPERATOR RULE (2026-11-06): a trade must close within 30 days of opening.
-  if (expiration && (new Date(expiration).getTime() - Date.now()) > TRADE_MAX_HOLD_MS) return { error: 'trade would hold over 30 days (closes ' + expiration + ')' };
+  // HOLD RULE: fail-closed - missing/invalid close_time blocks the entry
+  // (the old check silently skipped when expiration was absent).
+  const holdOk = holdRule.entryAllowed(expiration, Date.now());
+  if (!holdOk.ok) return { error: 'hold rule: ' + holdOk.reason };
   const mode = state.mode;
   const book = state.all_no[mode];
   if (!book) return { error: 'Book not found for mode: ' + mode };
@@ -3809,6 +3830,20 @@ async function runAllNoExits() {
     }
     const mark = q ? (pos.side === 'YES' ? q.yes_bid : q.no_bid) : null;
     if (!q || mark == null) continue;
+
+    // HOLD RULE (operator order 2026-11-06): a position open 30 days is
+    // force-exited. Sell only at or above entry; otherwise hold and retry on
+    // the next tick.
+    if (holdRule.forcedExitDue(pos.opened_at, Date.now())) {
+      if (holdRule.forcedExitPriceOk(mark, pos.entry_price)) {
+        log('hold_rule_forced_exit', { strategy: 'all_no', market: pos.market_id, bid: mark, entry: pos.entry_price, opened: pos.opened_at });
+        const result = closeAllNoPosition(pos.id, mark, 'hold_rule_30d');
+        if (result.ok) log('all_no_exit', { market_id: pos.market_id, reason: 'hold_rule_30d', pnl: result.pnl });
+      } else {
+        pos.hold_rule_waiting = { since: pos.hold_rule_waiting ? pos.hold_rule_waiting.since : new Date().toISOString(), bid: mark, entry: pos.entry_price };
+      }
+      continue;
+    }
     const tau = Math.max(0, (new Date(pos.expiration).getTime() - Date.now()) / 1000);
     const totalLife = Math.max(1, (new Date(pos.expiration).getTime() - new Date(pos.opened_at).getTime()) / 1000);
     const lifePct = 1 - tau / totalLife;
