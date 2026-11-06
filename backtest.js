@@ -307,20 +307,13 @@ function compactCandle(c) {
 // Ensure every usable market has a cached candle file covering its full life.
 async function ensureCandles(series, markets, log) {
   fs.mkdirSync(path.join(CANDLE_DIR, series), { recursive: true });
+  // A candle file is only ever written by a batch whose window covers the market's full life, and
+  // writes are atomic (tmp + rename), so existence is sufficient (no need to parse every file).
   const todo = [];
   let alreadyCached = 0;
   for (const m of markets) {
-    let doc = null;
-    try {
-      doc = JSON.parse(fs.readFileSync(candleFile(series, m.ticker), 'utf8'));
-    } catch (e) {
-      doc = null;
-    }
-    if (doc && isNum(doc.start) && isNum(doc.end) && doc.start <= m.open_ts && doc.end >= m.close_ts) {
-      alreadyCached++;
-    } else {
-      todo.push(m);
-    }
+    if (fs.existsSync(candleFile(series, m.ticker))) alreadyCached++;
+    else todo.push(m);
   }
   todo.sort((a, b) => (a.open_ts - b.open_ts) || cmpStr(a.ticker, b.ticker));
 
@@ -361,8 +354,11 @@ async function ensureCandles(series, markets, log) {
     }
   };
   await Promise.all(Array.from({ length: Math.min(CANDLE_CONCURRENCY, plan.length) }, worker));
+  if (failed > 0) log(`  ${series}: ${failed} markets failed; last error: ${lastBatchError}`);
   return { usable: markets.length, already_cached: alreadyCached, to_fetch: todo.length, fetched, failed, batches };
 }
+
+let lastBatchError = null;
 
 async function fetchCandleBatch(series, group, gs, ge) {
   const tickers = group.map(m => encodeURIComponent(m.ticker)).join(',');
@@ -372,6 +368,7 @@ async function fetchCandleBatch(series, group, gs, ge) {
     json = await getJson('kalshi', url);
   } catch (err) {
     httpStats.failed_requests++;
+    lastBatchError = `${series} n=${group.length} window=${(ge - gs) / 60}min: ${String(err.message).slice(0, 220)}`;
     return false;
   }
   const got = new Map();
@@ -380,7 +377,9 @@ async function fetchCandleBatch(series, group, gs, ge) {
   for (const m of group) {
     const candles = (got.get(m.ticker) || []).map(compactCandle).filter(Boolean);
     const file = candleFile(series, m.ticker);
-    fs.writeFileSync(file, JSON.stringify({ ticker: m.ticker, series, start: gs, end: ge, candles }));
+    const tmp = file + '.tmp';
+    fs.writeFileSync(tmp, JSON.stringify({ ticker: m.ticker, series, start: gs, end: ge, candles }));
+    fs.renameSync(tmp, file);
   }
   return true;
 }
@@ -564,61 +563,74 @@ function verdictFor(n, ev, ciLo, avgPrice) {
   return 'UNPROVEN';
 }
 
-function computeStats(trades) {
-  const n = trades.length;
-  let wins = 0;
-  let pnl = 0;
-  let risked = 0;
-  let priceSum = 0;
-  let modeled = 0;
-  let carried = 0;
-  for (const t of trades) {
-    if (t.won) wins++;
-    pnl += t.pnl;
-    risked += t.price + t.fee;
-    priceSum += t.price;
-    if (t.quote_source === 'modeled') modeled++;
-    else if (t.quote_age_min > 0) carried++;
-  }
-  const winRate = n ? wins / n : null;
-  const ev = n ? pnl / n : null;
-  const avgPrice = n ? priceSum / n : null;
-  const wi = wilsonInterval(wins, n);
+// Streaming accumulator. Trades are recorded in settlement order (markets are replayed by close time,
+// then ticker), so the running cumulative PnL gives the same max drawdown as sorting the trade list
+// by (settle_ts, entry_ts, ticker). Memory is O(1) per accumulator, not O(trades).
+function newAcc() {
+  return { n: 0, wins: 0, pnl: 0, risked: 0, priceSum: 0, modeled: 0, carried: 0, cum: 0, peak: 0, maxDd: 0 };
+}
+
+function accAdd(a, t) {
+  a.n++;
+  if (t.won) a.wins++;
+  a.pnl += t.pnl;
+  a.risked += t.price + t.fee;
+  a.priceSum += t.price;
+  if (t.quote_source === 'modeled') a.modeled++;
+  else if (t.quote_age_min > 0) a.carried++;
+  a.cum += t.pnl;
+  if (a.cum > a.peak) a.peak = a.cum;
+  if (a.peak - a.cum > a.maxDd) a.maxDd = a.peak - a.cum;
+}
+
+function statsFromAcc(a) {
+  const n = a.n;
+  const winRate = n ? a.wins / n : null;
+  const ev = n ? a.pnl / n : null;
+  const avgPrice = n ? a.priceSum / n : null;
+  const wi = wilsonInterval(a.wins, n);
   const verdict = verdictFor(n, ev, wi.lo, avgPrice);
-
-  const sorted = trades.slice().sort((a, b) =>
-    (a.settle_ts - b.settle_ts) || (a.entry_ts - b.entry_ts) || cmpStr(a.ticker, b.ticker) || cmpStr(a.side, b.side));
-  let cum = 0;
-  let peak = 0;
-  let maxDd = 0;
-  for (const t of sorted) {
-    cum += t.pnl;
-    if (cum > peak) peak = cum;
-    if (peak - cum > maxDd) maxDd = peak - cum;
-  }
-
   return {
     n_trades: n,
-    wins,
+    wins: a.wins,
     win_rate: r(winRate, 4),
-    total_pnl: r(pnl, 4),
+    total_pnl: r(a.pnl, 4),
     ev_per_trade: r(ev, 4),
     avg_price: r(avgPrice, 4),
-    total_risked: r(risked, 4),
-    pnl_per_dollar_risked: r(risked > 0 ? pnl / risked : null, 4),
-    max_drawdown: r(maxDd, 4),
+    total_risked: r(a.risked, 4),
+    pnl_per_dollar_risked: r(a.risked > 0 ? a.pnl / a.risked : null, 4),
+    max_drawdown: r(a.maxDd, 4),
     ci_lo: r(wi.lo, 4),
     ci_hi: r(wi.hi, 4),
     quote_sources: {
-      kalshi_candle: n - modeled,
-      kalshi_exact_minute: n - modeled - carried,
-      kalshi_carried: carried,
-      modeled,
-      kalshi_share: n ? r((n - modeled) / n, 4) : null,
-      modeled_share: n ? r(modeled / n, 4) : null,
+      kalshi_candle: n - a.modeled,
+      kalshi_exact_minute: n - a.modeled - a.carried,
+      kalshi_carried: a.carried,
+      modeled: a.modeled,
+      kalshi_share: n ? r((n - a.modeled) / n, 4) : null,
+      modeled_share: n ? r(a.modeled / n, 4) : null,
     },
     verdict,
   };
+}
+
+function newStrategyAcc() {
+  const bySeries = {};
+  for (const s of SERIES) bySeries[s] = newAcc();
+  return {
+    overall: newAcc(),
+    bySeries,
+    bySource: { kalshi_exact: newAcc(), kalshi_carried: newAcc(), modeled: newAcc() },
+    markets: 0, // markets with >= 1 entry
+    noMarkets: 0, // of those, markets settling NO
+  };
+}
+
+function recordTrade(sa, t) {
+  accAdd(sa.overall, t);
+  accAdd(sa.bySeries[t.series], t);
+  const src = t.quote_source === 'modeled' ? 'modeled' : (t.quote_age_min > 0 ? 'kalshi_carried' : 'kalshi_exact');
+  accAdd(sa.bySource[src], t);
 }
 
 // ---------------------------------------------------------------- engine
@@ -634,7 +646,9 @@ async function runBacktest(opts = {}) {
   resetHttpStats();
 
   const nowSec = Math.floor(Date.now() / 1000);
-  const windowEnd = Math.floor(nowSec / 3600) * 3600; // hour-aligned so cache keys are stable
+  // window end: hour-aligned so cache keys stay stable; opts.endSec pins the window for reproducible re-runs
+  const endSec = Number.isFinite(Number(opts.endSec)) && Number(opts.endSec) > 0 ? Number(opts.endSec) : nowSec;
+  const windowEnd = Math.floor(endSec / 3600) * 3600;
   const windowStart = windowEnd - Math.round(days * 86400);
 
   const strategies = loadStrategies();
@@ -666,6 +680,8 @@ async function runBacktest(opts = {}) {
     allMarkets.push(...usable);
     log(`${series}: settled listed=${lst.raw} usable=${usable.length} pages=${lst.pages}`);
   }
+  // global settlement order: replay (and therefore drawdown accumulation) runs in (close_ts, ticker) order
+  allMarkets.sort((a, b) => (a.close_ts - b.close_ts) || cmpStr(a.ticker, b.ticker));
   phaseDone('listing');
 
   // 2. Kalshi candles (batched, cached per ticker)
@@ -691,25 +707,25 @@ async function runBacktest(opts = {}) {
   // 4. ladder groups (markets sharing an event)
   const groups = new Map();
   for (const m of allMarkets) {
-    const key = `${m.series}|${m.event_ticker}`;
-    if (!groups.has(key)) groups.set(key, []);
-    groups.get(key).push(m);
+    m.group_key = `${m.series}|${m.event_ticker}`;
+    if (!groups.has(m.group_key)) groups.set(m.group_key, []);
+    groups.get(m.group_key).push(m);
   }
+  const ladderCaches = new Map(); // group_key -> Map(T -> nearest-strike result), released after last sibling
+  const ladderLeft = new Map(); // group_key -> siblings not yet replayed
 
   // 5. minute-by-minute replay
   const nStrat = strategies.length;
   const perStrat = strategies.map(s => ({
     s,
     maxEntries: Number.isInteger(s.max_entries_per_market) && s.max_entries_per_market > 0 ? s.max_entries_per_market : defaultMaxEntries,
-    trades: [],
+    acc: newStrategyAcc(),
   }));
   const minutes = { kalshi_exact: 0, kalshi_carried: 0, modeled: 0 };
   const skipped = { spot_missing: 0 };
   let candlePointsLoaded = 0;
   let marketsReplayed = 0;
   let marketsWithExact = 0;
-  let ladderKey = null;
-  let ladderCache = new Map();
 
   for (const m of allMarkets) {
     const sa = assets[assetOf(m.series)];
@@ -717,8 +733,11 @@ async function runBacktest(opts = {}) {
     candlePointsLoaded += candles.length;
     let cp = 0; // pointer: candles[0..cp) have end_ts <= T
     let last = null; // most recent candle with end_ts <= T
-    const grp = groups.get(`${m.series}|${m.event_ticker}`);
+    const grp = groups.get(m.group_key);
     const sibs = grp && grp.length > 1 ? grp : null;
+    if (sibs && !ladderLeft.has(m.group_key)) ladderLeft.set(m.group_key, sibs.length);
+    const openIso = iso(m.open_ts);
+    const closeIso = iso(m.close_ts);
     const entries = new Int32Array(nStrat);
     let kalshiMinutes = 0;
     marketsReplayed++;
@@ -775,10 +794,10 @@ async function runBacktest(opts = {}) {
       if (sibs) {
         // nearest-to-spot strike among the event's live markets at minute T (cached per event-minute;
         // all siblings share the same spot, so the result is identical for each sibling)
-        const gkey = `${m.series}|${m.event_ticker}`;
-        if (gkey !== ladderKey) {
-          ladderKey = gkey;
+        let ladderCache = ladderCaches.get(m.group_key);
+        if (!ladderCache) {
           ladderCache = new Map();
+          ladderCaches.set(m.group_key, ladderCache);
         }
         let hit = ladderCache.get(T);
         if (!hit) {
@@ -813,8 +832,8 @@ async function runBacktest(opts = {}) {
         strike: m.strike,
         strike_lo: m.lo,
         strike_hi: m.hi,
-        open_time: iso(m.open_ts),
-        close_time: iso(m.close_ts),
+        open_time: openIso,
+        close_time: closeIso,
         ts: T,
         minute_index: (T - m.open_ts) / 60,
         tau_sec: tau,
@@ -848,22 +867,32 @@ async function runBacktest(opts = {}) {
         const fee = feeFor(price, 1);
         const won = dec.side.toLowerCase() === m.result; // m.result is 'yes'|'no'
         const payoff = won ? 1 : 0;
-        ps.trades.push({
-          ticker: m.ticker,
+        recordTrade(ps.acc, {
           series: m.series,
-          side: dec.side,
-          entry_ts: T,
-          settle_ts: m.close_ts,
           price,
           fee,
-          payoff,
           pnl: payoff - price - fee,
           won,
           quote_source: quoteSource,
           quote_age_min: quoteAgeMin,
-          fair_side: dec.side === 'YES' ? fairYes : fairNo,
         });
         entries[k]++;
+      }
+    }
+    // per-market bookkeeping (after all minutes): markets traded, NO settlements among them
+    for (let k = 0; k < nStrat; k++) {
+      if (entries[k] > 0) {
+        perStrat[k].acc.markets++;
+        if (m.result === 'no') perStrat[k].acc.noMarkets++;
+      }
+    }
+    if (sibs) {
+      const left = ladderLeft.get(m.group_key) - 1;
+      if (left <= 0) {
+        ladderLeft.delete(m.group_key);
+        ladderCaches.delete(m.group_key);
+      } else {
+        ladderLeft.set(m.group_key, left);
       }
     }
     if (kalshiMinutes > 0) {
@@ -877,23 +906,22 @@ async function runBacktest(opts = {}) {
   // 6. statistics
   const seriesList = SERIES.filter(s => perSeries[s].usable > 0);
   const strategyResults = perStrat.map(ps => {
-    const overall = computeStats(ps.trades);
+    const a = ps.acc;
     const bySeries = {};
-    for (const s of SERIES) bySeries[s] = computeStats(ps.trades.filter(t => t.series === s));
-    const bySource = {
-      kalshi_exact: computeStats(ps.trades.filter(t => t.quote_source === 'kalshi_candle' && t.quote_age_min === 0)),
-      kalshi_carried: computeStats(ps.trades.filter(t => t.quote_source === 'kalshi_candle' && t.quote_age_min > 0)),
-      modeled: computeStats(ps.trades.filter(t => t.quote_source === 'modeled')),
-    };
+    for (const s of SERIES) bySeries[s] = statsFromAcc(a.bySeries[s]);
     return {
       name: ps.s.name,
       description: ps.s.description,
       file: ps.s.file,
       max_entries_per_market: ps.maxEntries,
-      markets_traded: new Set(ps.trades.map(t => t.ticker)).size,
-      ...overall,
+      markets_traded: a.markets,
+      ...statsFromAcc(a.overall),
       by_series: bySeries,
-      by_quote_source: bySource,
+      by_quote_source: {
+        kalshi_exact: statsFromAcc(a.bySource.kalshi_exact),
+        kalshi_carried: statsFromAcc(a.bySource.kalshi_carried),
+        modeled: statsFromAcc(a.bySource.modeled),
+      },
     };
   });
 
@@ -901,19 +929,19 @@ async function runBacktest(opts = {}) {
   const sanityStrat = strategyResults.find(s => s.name === 'sanity_always_no') || null;
   let sanity = null;
   if (sanityStrat) {
-    const trade = perStrat.find(p => p.s.name === 'sanity_always_no').trades;
-    const tradedSet = new Set(trade.map(t => t.ticker));
-    const traded = allMarkets.filter(m => tradedSet.has(m.ticker));
-    const noTraded = traded.filter(m => m.result === 'no').length;
+    const sacc = perStrat.find(p => p.s.name === 'sanity_always_no').acc;
+    const traded = sacc.markets;
+    const noTraded = sacc.noMarkets;
     const noAll = allMarkets.filter(m => m.result === 'no').length;
     sanity = {
       strategy: 'sanity_always_no',
       n_trades: sanityStrat.n_trades,
       win_rate: sanityStrat.win_rate,
-      no_rate_of_traded_markets: traded.length ? r(noTraded / traded.length, 4) : null,
+      markets_traded: traded,
+      no_rate_of_traded_markets: traded ? r(noTraded / traded, 4) : null,
       no_rate_all_usable_markets: allMarkets.length ? r(noAll / allMarkets.length, 4) : null,
-      match: sanityStrat.n_trades === traded.length && traded.length > 0 &&
-        Math.abs(sanityStrat.win_rate - noTraded / traded.length) < 5e-5, // win_rate is rounded to 4dp
+      match: sanityStrat.n_trades === traded && traded > 0 &&
+        Math.abs(sanityStrat.win_rate - noTraded / traded) < 5e-5, // win_rate is rounded to 4dp
     };
   }
 
@@ -1029,6 +1057,7 @@ function parseArgs(argv) {
     days: DEFAULT_DAYS,
     maxEntries: DEFAULT_MAX_ENTRIES,
     carryMaxMin: DEFAULT_CARRY_MAX_MIN,
+    endSec: null,
     bySeries: false,
   };
   for (let i = 1; i < argv.length; i++) {
@@ -1039,6 +1068,7 @@ function parseArgs(argv) {
     if (key === '--days') args.days = Number(val());
     else if (key === '--max-entries') args.maxEntries = Number(val());
     else if (key === '--carry-max-min') args.carryMaxMin = Number(val());
+    else if (key === '--end') args.endSec = Math.floor(Date.parse(val()) / 1000);
     else if (key === '--by-series') args.bySeries = true;
   }
   return args;
@@ -1113,6 +1143,7 @@ async function main() {
       days: args.days,
       maxEntries: args.maxEntries,
       carryMaxMin: args.carryMaxMin,
+      endSec: args.endSec,
       log: msg => process.stderr.write(msg + '\n'),
     });
     printTable(res, args.bySeries);
@@ -1122,7 +1153,7 @@ async function main() {
     console.log(JSON.stringify(summary(), null, 2));
     return;
   }
-  console.error('usage: node backtest.js run [--days 14] [--max-entries 1] [--carry-max-min 15] [--by-series]\n       node backtest.js summary');
+  console.error('usage: node backtest.js run [--days 14] [--max-entries 1] [--carry-max-min 15] [--end ISO] [--by-series]\n       node backtest.js summary');
   process.exitCode = 2;
 }
 
@@ -1141,4 +1172,5 @@ module.exports = {
   normCdf,
   FEE_RATE,
   RESULTS_PATH,
+  _test: { newAcc, accAdd, statsFromAcc }, // internals exposed for unit checks
 };
