@@ -1423,7 +1423,84 @@ function dryAccountPayload() {
   };
 }
 
-function openDryPosition(lane, q, side, price, fair, edge, sigma) {
+// OPERATOR RULE (2026-11-06): markets are unrestricted; a TRADE must close within
+// 30 days of opening. Entries whose market closes further out are refused.
+const TRADE_MAX_HOLD_MS = 30 * 24 * 3600 * 1000;
+// ---------------------------------------------------------------------------
+// MAKER-EDGE LAYER (2026-11-06, operator order). Lanes never lift the ask: they
+// rest a bid at their own level through FILLSIM. A position exists only when a
+// REAL print goes through that bid inside the TTL. The kill sweep switches off
+// any strategy whose recent maker fills lose money, so it stops buying trash.
+// ---------------------------------------------------------------------------
+function makerLaneMode(lane, lc) {
+  if (state.runtime.lane_maker === false) return false;
+  if (lc && lc.maker === false) return false;
+  return true;
+}
+function laneMakerPending(name) {
+  for (const it of FILLSIM._pending.values()) { if (it.book && it.book.lane_entry && it.book.lane === name) return true; }
+  return false;
+}
+function makerKillMinN() { return Math.max(10, Number(state.runtime.maker_kill_min_n) || 30); }
+function killStrategy(name, reason) {
+  const ls = laneState(name);
+  ls.running = false; ls.maker_killed = true; ls.kill_reason = reason; ls.killed_at = new Date().toISOString();
+  ls.stop_reason = 'maker-edge kill: ' + reason;
+  log('maker_kill', { strategy: name, reason });
+  broadcast('strategy', name + ' KILLED: ' + reason);
+  save();
+}
+function resetMakerWindow(name) {
+  const ls = laneState(name);
+  ls.maker_window_ts = new Date().toISOString();
+  ls.maker_killed = false; ls.kill_reason = null; ls.killed_at = null;
+}
+// KILL TEST (one-sided 95%): a strategy is useless only when the upper bound of
+// its window EV is still below zero, i.e. mean + 1.645 * SE < 0. A plain "lost
+// money over the last N" rule kills on noise (a 34%-win-rate book swings widely).
+function makerWindowStats(trades, sinceIso, minN) {
+  const rows = (trades || []).filter(t => !sinceIso || (t.exit_timestamp && t.exit_timestamp >= sinceIso));
+  const win = rows.slice(-minN);
+  const xs = win.map(t => Number(t.pnl || 0));
+  const n = xs.length;
+  const pnl = xs.reduce((a, b) => a + b, 0);
+  const mean = n ? pnl / n : 0;
+  const sd = n > 1 ? Math.sqrt(xs.reduce((a, b) => a + (b - mean) * (b - mean), 0) / (n - 1)) : 0;
+  const se = n > 1 ? sd / Math.sqrt(n) : 0;
+  return { n_total: rows.length, n_window: n, pnl_window: Number(pnl.toFixed(4)), ev_window: n ? Number(mean.toFixed(4)) : null, ev_upper: n ? Number((mean + 1.645 * se).toFixed(4)) : null };
+}
+function makerKillSweep() {
+  const minN = makerKillMinN();
+  for (const lane of LANES) {
+    if (!lane.seriesList || !lane.seriesList.length) continue;
+    const ls = laneState(lane.name);
+    if (!ls.running) continue;
+    const mine = state.dry.closed.filter(t => t.strategy === lane.name && t.maker_fill);
+    const st = makerWindowStats(mine, ls.maker_window_ts, minN);
+    if (st.n_window >= minN && st.ev_upper < 0) killStrategy(lane.name, 'last ' + st.n_window + ' maker fills EV ' + st.ev_window + ' (95% upper ' + st.ev_upper + ')');
+  }
+  const nd = laneState('all_no_markets');
+  const book = state.all_no[state.mode];
+  if (nd.running && book && Array.isArray(book.closed_trades)) {
+    const st = makerWindowStats(book.closed_trades, nd.maker_window_ts, minN);
+    if (st.n_window >= minN && st.ev_upper < 0) killStrategy('all_no_markets', 'last ' + st.n_window + ' ALL NO fills EV ' + st.ev_window + ' (95% upper ' + st.ev_upper + ')');
+  }
+}
+function makerPayload() {
+  const minN = makerKillMinN();
+  const lanes = LANES.filter(l => l.seriesList && l.seriesList.length).map(l => {
+    const ls = laneState(l.name);
+    const mine = state.dry.closed.filter(t => t.strategy === l.name && t.maker_fill);
+    const st = makerWindowStats(mine, ls.maker_window_ts, minN);
+    return { strategy: l.name, running: !!ls.running, rests: ls.maker_rests || 0, maker_closed: mine.length,
+      pnl_all: Number(mine.reduce((a, t) => a + Number(t.pnl || 0), 0).toFixed(4)),
+      window_n: st.n_window, window_ev: st.ev_window, window_pnl: st.pnl_window,
+      killed: !!ls.maker_killed, kill_reason: ls.kill_reason || null, killed_at: ls.killed_at || null };
+  });
+  return { generated_at: new Date().toISOString(), kill_min_n: minN, maker_mode: state.runtime.lane_maker !== false, fill_realism: FILLSIM.stats(), lanes };
+}
+function openDryPosition(lane, q, side, price, fair, edge, sigma, opts) {
+  if (q && q.close_time && (new Date(q.close_time).getTime() - Date.now()) > TRADE_MAX_HOLD_MS) { const lh = laneState(lane.name); lh.skips++; lh.last_skip = 'trade would hold over 30 days (closes ' + q.close_time + ')'; return null; }
   // OPERATOR ORDER 2026-11-04: every order is at most $0.50. The old
   // Math.max(1, Math.floor(clip/price)) forced qty=1 whenever the price ALONE
   // exceeded the cap - that is exactly how a $0.61 KXBTC15M YES slipped through
@@ -1476,6 +1553,7 @@ function openDryPosition(lane, q, side, price, fair, edge, sigma) {
     // Fill quality tracking
     bid_at_entry,
     ask_at_entry,
+    maker_fill: !!(opts && opts.maker),
   };
   state.dry.positions.push(pos);
   const ls = laneState(lane.name);
@@ -1523,6 +1601,8 @@ function closeDryPosition(pos, exitPrice, reason, result) {
     bid_at_entry: pos.bid_at_entry,
     ask_at_entry: pos.ask_at_entry,
     fill_quality: fillQuality,
+    maker_fill: !!pos.maker_fill,
+    entry_mode: pos.maker_fill ? 'maker' : 'taker',
     // Settlement tracking (filled when settled)
     settled_price: reason === 'settled' ? exitPrice : null,
     settlement_source: reason === 'settled' ? 'kalshi' : null,
@@ -1676,6 +1756,7 @@ async function engineTick() {
     const act = await activeQuote(lane);
     ls.last_series = act.series;
     if (!act.quote) { ls.skips++; ls.last_skip = act.error || 'no quotable market'; continue; }
+    pumpFills(act.quote);
     const q = act.quote;
     q.source = act.source; q.host = act.host;
     if (!lane.spot) continue;
@@ -1754,11 +1835,9 @@ async function engineTick() {
     const held = state.dry.positions.filter(p => p.strategy === lane.name).length;
     if (held >= 1) { ls.skips++; ls.last_skip = 'already holding'; continue; }
 
-    // Max hold time check
-    const maxHoldMs = state.runtime.max_hold_sec * 1000 || 300000;
-    if (ls.last_entry_at && (Date.now() - ls.last_entry_at) > maxHoldMs) {
-      ls.skips++; ls.last_skip = 'max hold time exceeded'; continue;
-    }
+    // (max-hold ENTRY gate removed 2026-11-06: it refused every new entry once the
+    // last entry was older than 5 minutes, which starved the lanes. Hold-time exits
+    // are handled by the position manager.)
 
     // REAL model fair value for the chosen side (drives fair_at_entry records).
     const fair = result.fair != null ? result.fair : price;
@@ -1766,6 +1845,17 @@ async function engineTick() {
     // Enforce: operator's last button push is absolute law.
     OPERATOR_LAW.enforce('engineTick mid-tick check', { lane: lane.name, running: ls.running });
     if (!ls.running) { ls.skips++; ls.last_skip = 'operator stop (mid-tick)'; continue; }
+    if (makerLaneMode(lane, lc)) {
+      // MAKER-EDGE: never lift the ask. Rest a bid at our own level; FILLSIM books
+      // the position only if a REAL print goes through that bid inside the TTL.
+      if (laneMakerPending(lane.name)) { ls.skips++; ls.last_skip = 'maker bid already resting'; continue; }
+      const ttlSec = Number(lc.maker_ttl_sec) || (lane.horizon === '15m' ? 60 : 180);
+      const snapQ = { ticker: q.ticker, title: q.title, series: q.series, strike: q.strike, close_time: q.close_time, source: q.source, host: q.host, yes_bid: q.yes_bid, no_bid: q.no_bid, yes_ask: q.yes_ask, no_ask: q.no_ask };
+      const rid = FILLSIM.intent({ ticker: q.ticker, side, bid: price, qty: 1, ttl_ms: ttlSec * 1000, volume: q.volume, last: q.last,
+        book: { lane_entry: true, lane: lane.name, side, price, fair: result.fair != null ? result.fair : price, edge: result.edge, sigma: perSec, q: snapQ } });
+      if (rid) { ls.maker_rests = (ls.maker_rests || 0) + 1; ls.last_skip = 'maker bid ' + price + ' ' + side + ' resting ' + ttlSec + 's'; }
+      continue;
+    }
     const opened = await openDryPosition(lane, q, side, price, fair, result.edge, perSec);
     if (opened) { ls.last_entry_at = Date.now(); ls.pending_edge = null; }
   }
@@ -2156,6 +2246,11 @@ function pumpFills(q) {
     const a = ev.intent.book;
     // HARVESTER fills route to the harvester's own paper ledger; everything
     // else books into the all_no book as before.
+    if (a.lane_entry) {
+      const lref = LANE_BY_NAME.get(a.lane);
+      if (lref) { const fillPos = openDryPosition(lref, a.q, a.side, a.price, a.fair, a.edge, a.sigma, { maker: true }); if (fillPos) laneState(lref.name).last_entry_at = Date.now(); }
+      continue;
+    }
     if (a.extra && a.extra.harvester) { HARVEST.bookFill(a); continue; }
     createAllNoEntry(a.market_id, a.entry, a.qty, a.fair, a.edge, a.kelly, a.stop,
       a.take_profit, a.confidence, a.expiration, a.extra);
@@ -2373,6 +2468,8 @@ async function getAllTradableSeries() {
 // ALL NO MARKETS - Entry/Exit Trade Functions
 // ---------------------------------------------------------------------------
 function createAllNoEntry(market_id, entry_price, quantity, fair_at_entry, edge, kelly, stop_loss, take_profit, confidence, expiration, extra) {
+  // OPERATOR RULE (2026-11-06): a trade must close within 30 days of opening.
+  if (expiration && (new Date(expiration).getTime() - Date.now()) > TRADE_MAX_HOLD_MS) return { error: 'trade would hold over 30 days (closes ' + expiration + ')' };
   const mode = state.mode;
   const book = state.all_no[mode];
   if (!book) return { error: 'Book not found for mode: ' + mode };
@@ -2851,6 +2948,7 @@ async function handle(req, res) {
   }
   if (p === '/api/no-lanes') return json(res, { no_lanes_enabled: !!state.no_lanes_enabled });
   if (p === '/api/fill-realism') return json(res, FILLSIM.stats());
+  if (p === '/api/maker') return json(res, makerPayload());
   if (p === '/api/scan') return json(res, { all_no_scan: lastScanTally, spot_lag: Object.fromEntries(SPOT_PRODUCTS.map(x => [x, { lag_s: spot[x].last_frame_lag_s == null ? null : spot[x].last_frame_lag_s, via: spot[x].via || null }])), generated_at: new Date().toISOString() });
   if (p === '/api/no-lanes/book') {
     // Return ALL NO book: positions, trades, and tallies
@@ -2937,7 +3035,7 @@ async function handle(req, res) {
       // Enforce at runtime - this is the ONLY writer of ls.running.
       OPERATOR_LAW.enforce('toggleStrategy', { lane: name, requestedRunning: b.running });
       if (typeof b.running === 'boolean') {
-        ls.running = b.running;
+        ls.running = b.running; if (b.running) resetMakerWindow(name);
       } else {
         ls.running = !ls.running;
       }
@@ -3866,6 +3964,7 @@ async function boot() {
 
   // ALL NO engine - runs every 10s for entries, every 5s for exits
   setInterval(runAllNoEngine, ALL_NO_CONFIG.scan_interval_ms);
+setInterval(() => { try { makerKillSweep(); } catch (e) { } }, 30000);
   setInterval(runAllNoExits, 5000);
   // THE CERTAINTY LANE scans on its own clock (the window is only minutes
   // wide) and NEVER posts a real order in the lab - it is paper only.
