@@ -935,18 +935,49 @@ CALIB.init().catch((e) => { console.error('[calibration] boot failed:', e.messag
 // silent watchdog restart loops become visible.
 state.boot_count = (state.boot_count || 0) + 1;
 let saveTimer = null;
+// SAVE-PATH WITNESS (2026-11-06): the save used to swallow every error. A single
+// non-serializable value (circular ref / BigInt) made JSON.stringify throw, every
+// later save returned false silently, and state.json froze for hours while the
+// process kept trading. Serialize defensively and LOG every failure.
+function safeStringify(obj) {
+  const ancestors = [];
+  return JSON.stringify(obj, function (key, value) {
+    if (typeof value === 'bigint') return value.toString();
+    if (typeof value !== 'object' || value === null) return value;
+    while (ancestors.length > 0 && ancestors[ancestors.length - 1] !== this) ancestors.pop();
+    if (ancestors.includes(value)) return '[circular]';
+    ancestors.push(value);
+    return value;
+  }, 1);
+}
+let stateWriteErrors = 0;
+function noteStateWriteError(stage, err) {
+  stateWriteErrors++;
+  const msg = String((err && err.message) || err).slice(0, 300);
+  try { console.error('[state] write failed at ' + stage + ': ' + msg); } catch (e) { }
+  try { log('state_write_error', { stage, error: msg, count: stateWriteErrors }); } catch (e) { }
+}
 function writeStateAtomic() {
   // ATOMIC REPLACE. Write temp -> fsync -> rename. The old writeFileSync could
   // leave a half-written state.json if the process was killed mid-save, and the
   // next boot then silently reverted to defaults.
   let payload = null;
-  try { payload = JSON.stringify(state, null, 1); } catch (e) { return false; }
+  try { payload = safeStringify(state); } catch (e) { noteStateWriteError('stringify', e); return false; }
   const tmp = STATE_TMP_FILE + '.' + process.pid;
   try {
     const fd = fs.openSync(tmp, 'w');
     try { fs.writeSync(fd, payload); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
-    fs.renameSync(tmp, STATE_FILE);
+    try {
+      fs.renameSync(tmp, STATE_FILE);
+    } catch (e) {
+      // Windows can refuse rename while another reader holds state.json open.
+      // Fall back to a direct overwrite so the save still lands (and is logged).
+      noteStateWriteError('rename-fallback', e);
+      fs.writeFileSync(STATE_FILE, payload);
+      try { fs.unlinkSync(tmp); } catch (e3) { }
+    }
   } catch (e) {
+    noteStateWriteError('write', e);
     try { fs.unlinkSync(tmp); } catch (e2) { }
     return false;
   }
@@ -986,29 +1017,55 @@ const spot = {};      // product -> { price, bid, ask, t, at, source, points:[{t
 const spotAge = {};   // product -> ms timestamp of last success
 const marketCache = new Map(); // series -> { at, market, source, error, markets }
 
-for (const p of SPOT_PRODUCTS) spot[p] = { price: null, points: [], source: 'Coinbase Exchange (api.exchange.coinbase.com)', product: p };
+for (const p of SPOT_PRODUCTS) spot[p] = { price: null, points: [], source: 'Coinbase Exchange (api.exchange.coinbase.com)', product: p, fresh_ticks: 0, stale_frames: 0, duplicate_frames: 0, rejected: 0 };
 
-async function pollSpot() {
-  for (const p of SPOT_PRODUCTS) {
+// SPOT INGEST (2026-11-06). Every spot tick enters through here, from the
+// Coinbase WebSocket or the REST backstop. A frame whose exchange timestamp is
+// old is counted and dropped; so is an exact repeat of the last price+time.
+// Before this, a frozen feed kept advancing `at` while every point carried the
+// same stale timestamp, which emptied the 900s realised-vol window and blinded
+// every lane ("no realized vol", every candidate refused).
+const SPOT_MAX_FRAME_AGE_SEC = 20;
+function ingestSpotTick(product, price, bid, ask, timeStr, via) {
+  const s = spot[product];
+  if (!s) return false;
+  if (!Number.isFinite(price) || price <= 0) { s.rejected++; return false; }
+  const nowSec = Date.now() / 1000;
+  let t = Math.floor(new Date(timeStr).getTime() / 1000);
+  if (!Number.isFinite(t)) t = Math.floor(nowSec);
+  s.last_frame_lag_s = Math.round(nowSec - t);
+  if (nowSec - t > SPOT_MAX_FRAME_AGE_SEC) {
+    s.stale_frames++;
+    s.last_stale = { via, time: timeStr || null, age_s: Math.round(nowSec - t) };
+    return false;
+  }
+  if (timeStr && timeStr === s.last_time_str && price === s.price) { s.duplicate_frames++; return false; }
+  s.price = price;
+  if (Number.isFinite(bid)) s.bid = bid;
+  if (Number.isFinite(ask)) s.ask = ask;
+  s.t = t;
+  s.at = Date.now();
+  s.last_time_str = timeStr || null;
+  s.via = via;
+  s.fresh_ticks++;
+  s.points.push({ t, p: price });
+  const cutoff = nowSec - 86400;
+  while (s.points.length && s.points[0].t < cutoff) s.points.shift();
+  if (s.points.length > 30000) s.points.splice(0, s.points.length - 30000);
+  return true;
+}
+
+async function pollSpot(products) {
+  for (const p of (products || SPOT_PRODUCTS)) {
     try {
       const r = await fetch('https://api.exchange.coinbase.com/products/' + p + '/ticker', {
-        headers: { 'User-Agent': 'kai-mirror/1.0' },
+        headers: { 'User-Agent': 'kai-mirror/1.0', 'Cache-Control': 'no-cache' },
       });
       if (!r.ok) throw new Error('HTTP ' + r.status);
       const j = await r.json();
-      const price = Number(j.price);
-      if (!Number.isFinite(price)) throw new Error('bad price');
-      const s = spot[p];
-      s.price = price;
-      s.bid = Number(j.bid);
-      s.ask = Number(j.ask);
-      s.t = Math.floor(new Date(j.time).getTime() / 1000) || Math.floor(Date.now() / 1000);
-      s.at = Date.now();
-      s.points.push({ t: s.t, p: price });
-      const cutoff = Date.now() / 1000 - 86400;
-      while (s.points.length && s.points[0].t < cutoff) s.points.shift();
-      if (s.points.length > 30000) s.points.splice(0, s.points.length - 30000);
-      spotAge[p] = Date.now();
+      if (ingestSpotTick(p, Number(j.price), Number(j.bid), Number(j.ask), j.time, 'rest')) {
+        spotAge[p] = Date.now();
+      }
     } catch (e) {
       spot[p].last_error = String(e.message || e);
     }
@@ -2105,7 +2162,11 @@ function pumpFills(q) {
   }
 }
 
+// SCAN TALLY (2026-11-06): why each market was rejected on the last ALL NO pass.
+let lastScanTally = {};
 async function noBook() {
+  const SCAN = {};
+  const sk = (r) => { SCAN[r] = (SCAN[r] || 0) + 1; };
   // DIVERGENCE POLICY: Mirror is the LAB - keep gates loose (cluster=2, no
   // price floor, HYPE live) to generate statistics. LIVE is the product with
   // tight gates. Do NOT sync LIVE tightenings back into Mirror.
@@ -2133,17 +2194,17 @@ async function noBook() {
           HARVEST.settleResult(q.ticker, q.result === 'yes');
         } catch (e) { }
       }
-      if (q.status === 'finalized' || q.result) continue;
-      if (!q.strike || !q.close_time) continue;
+      if (q.status === 'finalized' || q.result) { sk('finalized_or_resolved'); continue; }
+      if (!q.strike || !q.close_time) { sk('no_strike_or_close'); continue; }
       
       const asset = s.startsWith('KXB') ? 'BTC-USD' : s.startsWith('KXE') ? 'ETH-USD' : s.startsWith('KXX') ? 'XRP-USD' : s.startsWith('KXH') ? 'HYPE-USD' : null;
       const sp = asset ? spot[asset] : null;
-      if (!sp || !Number.isFinite(sp.price)) continue;
+      if (!sp || !Number.isFinite(sp.price)) { sk('no_spot'); continue; }
       
       // Compute fair value using Black-Scholes normal CDF
       const perSec = perSecondVol(asset, 900);
       const tau = Math.max(0, (new Date(q.close_time).getTime() - Date.now()) / 1000);
-      if (tau < 30 || tau > 3600) continue; // only 30s-1hr contracts
+      if (tau < 30 || tau > 3600) { sk('tau_outside_30_3600'); continue; } // only 30s-1hr contracts
       
       let fair = 0.5;
       if (perSec && tau > 20) {
@@ -2156,19 +2217,19 @@ async function noBook() {
       }
       
       // Strict fair value bounds
-      if (fair < 0.1 || fair > 0.9) continue;
+      if (fair < 0.1 || fair > 0.9) { sk(perSec ? 'fair_outside_0.1_0.9' : 'no_realized_vol'); continue; }
       
       // Use REAL market quotes - no synthetic fallbacks
       const no_bid = q.no_bid;
       const no_ask = q.no_ask;
       // 2026-11-04 OPERATOR ORDER: one-sided books are tradable. We POST at the
       // bid, so a NO entry only needs a real NO bid. Quote sanity still applies.
-      if (q.facts_ok === false) continue;   // DATA INTEGRITY: payload failed verification
-      if (!no_bid || no_bid <= 0.02 || (no_ask != null && no_ask >= 0.98)) continue;
+      if (q.facts_ok === false) { sk('facts_refused:' + (q.facts_verdict || '?')); continue; }   // DATA INTEGRITY: payload failed verification
+      if (!no_bid || no_bid <= 0.02 || (no_ask != null && no_ask >= 0.98)) { sk('no_bid_missing_or_extreme'); continue; }
       
       // Spread only where both sides exist; a one-sided book has no spread to test.
       const spread = (no_ask != null) ? no_ask - no_bid : 0;
-      if (no_ask != null && spread > 0.06) continue; // skip wide spreads (the hard thin line)
+      if (no_ask != null && spread > 0.06) { sk('wide_spread'); continue; } // skip wide spreads (the hard thin line)
       
       // Deep-value thesis, real basis: we ENTER at the bid (maker), so edge is
       // measured against the bid. Model prob >= min_fair and entry <= cap
@@ -2178,21 +2239,21 @@ async function noBook() {
       // high-probability NO. One scan, both sides, per-side caps.
       const anCfg = { min_fair: 0.65, max_no_price: 0.35, max_yes_price: 0.35, min_edge: 0.02, allow_yes: true, ...(state.runtime.all_no || {}) };
       const mkRow = (side, fairSide, bid, askPx) => {
-        if (state.safe_mode) return;   // FAIL CLOSED
+        if (state.safe_mode) { sk('safe_mode'); return; }   // FAIL CLOSED
         const cap = side === 'YES' ? anCfg.max_yes_price : anCfg.max_no_price;
-        if (bid == null) return;
+        if (bid == null) { sk('no_bid_side_' + side); return; }
         const sideSpread = askPx != null ? askPx - bid : 0;
-        if (askPx != null && sideSpread > 0.06) return; // per-side thin line
+        if (askPx != null && sideSpread > 0.06) { sk('side_spread_wide'); return; } // per-side thin line
         // FAT-TAIL MARGIN: HYPE's jumps crush a smooth gaussian model. Demand
         // more probability margin there.
         const fairFloor = asset === 'HYPE-USD' ? Math.max(anCfg.min_fair, 0.58) : anCfg.min_fair;
-        if (fairSide < fairFloor) return;                   // probability floor
+        if (fairSide < fairFloor) { sk('fair_below_floor'); return; }                   // probability floor
         // CONFIDENCE CEILING (2026-11-03 calibration): the model's loudest claims
         // were its worst - LIVE fair .80+ won 50%, .55-.60 won 0/8, .62-.75 won 72.5%.
         // max_fair unset = 9.99 = ceiling disabled, so the lab keeps sampling this zone.
-        if (fairSide > (anCfg.max_fair != null ? anCfg.max_fair : 9.99)) return;
-        if (bid > cap) return;                              // price cap (cheap only)
-        if (bid < (anCfg.min_entry_price || 0)) return;     // no sub-floor lottery tickets
+        if (fairSide > (anCfg.max_fair != null ? anCfg.max_fair : 9.99)) { sk('fair_above_ceiling'); return; }
+        if (bid > cap) { sk('bid_above_cap'); return; }                              // price cap (cheap only)
+        if (bid < (anCfg.min_entry_price || 0)) { sk('bid_below_min_entry'); return; }     // no sub-floor lottery tickets
         // MOMENTUM CONFIRMATION: the gaussian model knows only distance from
         // strike. Winners entered while the move AWAY from the strike was
         // continuing; losers were reversals. Block entries when spot is
@@ -2201,17 +2262,17 @@ async function noBook() {
         if (pts.length >= 31 && perSec) {
           const mom = (sp.price - pts[pts.length - 31].p) / pts[pts.length - 31].p;
           const drift60 = 0.5 * perSec * Math.sqrt(60);
-          if (side === 'NO' && mom > drift60) return;   // spot rising toward strike
-          if (side === 'YES' && mom < -drift60) return; // spot falling toward strike
+          if (side === 'NO' && mom > drift60) { sk('momentum_block'); return; }   // spot rising toward strike
+          if (side === 'YES' && mom < -drift60) { sk('momentum_block'); return; } // spot falling toward strike
         }
         const e = fairSide - bid;                           // REAL maker edge
-        if (e < anCfg.min_edge) return;
+        if (e < anCfg.min_edge) { sk('edge_below_min'); return; }
         // TOO-GOOD FILTER (CODE LAW 2026-11-04): an edge > 0.15 means the
         // MODEL is wrong, not that the market is giving money away. This cap
         // lives in CODE, not runtime config — the Oct 26 config surgery that
         // raised max_edge to 0.30 is exactly how 1,136 zero-win entries got
         // made. No runtime override may ever raise it.
-        if (e > MAX_CLAIMED_EDGE) return;
+        if (e > MAX_CLAIMED_EDGE) { sk('edge_above_code_cap'); return; }
         // THE VACCINE: the claimed fair is a hypothesis, not a probability.
         // The bucket's REALIZED record (with market price as prior) is the
         // only probability we trade against. Blocked candidates become free
@@ -2221,6 +2282,7 @@ async function noBook() {
           claimed: fairSide, price: bid, minEdge: Math.max(anCfg.min_edge, 0.05),
         });
         if (!cal.ok) {
+          sk('calib_gate_refused');
           CALIB.shadowOpen({
             ticker: q.ticker, side, strategy: 'all_no_markets',
             claimed: fairSide, price: bid, gate: cal,
@@ -2236,7 +2298,7 @@ async function noBook() {
         // Math.max(1, ...) forced a $0.61 YES through on KXBTC15M (2026-11-04).
         const qBudget = Math.min(effectiveClip(), 5 * kellyCapped);
         const q2 = Math.floor(qBudget / Math.max(0.01, bid));
-        if (q2 < 1) return;
+        if (q2 < 1) { sk('qty_below_1'); return; }
         rows.push({
           id: q.ticker,
           market: q.title,
@@ -2273,6 +2335,7 @@ async function noBook() {
   }
   
   // Sort by edge * confidence (quality-adjusted edge)
+  lastScanTally = SCAN;
   rows.sort((a, b) => (b.edge * b.confidence) - (a.edge * a.confidence));
   return rows.slice(0, 20); // top 20 only
 }
@@ -2710,7 +2773,7 @@ async function handle(req, res) {
     return;
   }
   if (p === '/api/provenance') {
-    return json(res, { provenance: lastProvenance(), lanes: cards(), spot: Object.fromEntries(SPOT_PRODUCTS.map(x => [x, { price: spot[x].price, at: spot[x].at ? new Date(spot[x].at).toISOString() : null, ticks: spot[x].points.length, vol_per_sec: perSecondVol(x, 900) }])) });
+    return json(res, { provenance: lastProvenance(), lanes: cards(), spot: Object.fromEntries(SPOT_PRODUCTS.map(x => [x, { price: spot[x].price, at: spot[x].at ? new Date(spot[x].at).toISOString() : null, via: spot[x].via || null, last_exchange_time: spot[x].last_time_str || null, ticks: spot[x].points.length, fresh_ticks: spot[x].fresh_ticks, stale_frames: spot[x].stale_frames, duplicate_frames: spot[x].duplicate_frames, last_stale: spot[x].last_stale || null, vol_per_sec: perSecondVol(x, 900) }])), state_write_errors: stateWriteErrors });
   }
   if (p === '/api/config' && method === 'POST') {
     const b = await readBody(req);
@@ -2788,6 +2851,7 @@ async function handle(req, res) {
   }
   if (p === '/api/no-lanes') return json(res, { no_lanes_enabled: !!state.no_lanes_enabled });
   if (p === '/api/fill-realism') return json(res, FILLSIM.stats());
+  if (p === '/api/scan') return json(res, { all_no_scan: lastScanTally, spot_lag: Object.fromEntries(SPOT_PRODUCTS.map(x => [x, { lag_s: spot[x].last_frame_lag_s == null ? null : spot[x].last_frame_lag_s, via: spot[x].via || null }])), generated_at: new Date().toISOString() });
   if (p === '/api/no-lanes/book') {
     // Return ALL NO book: positions, trades, and tallies
     const bookData = getAllNoBook(u.searchParams.get('side'));
@@ -3703,26 +3767,32 @@ async function boot() {
 
   // Coinbase WebSocket for real-time spot prices (replaces 2s HTTP polling)
   const spotProducts = ['BTC-USD', 'ETH-USD', 'XRP-USD', 'HYPE-USD'];
+  let spotWsLastFrame = Date.now();
   const coinbaseWS = new CoinbaseWS(spotProducts,
       (ticker) => {
         // High-frequency feed: NO per-ticker logging (PC strain).
-        const p = spot[ticker.product_id];
-        if (p) {
-          p.price = ticker.price;
-          p.bid = ticker.bid;
-          p.ask = ticker.ask;
-          p.t = Math.floor(new Date(ticker.time).getTime() / 1000) || Math.floor(Date.now() / 1000);
-          p.at = Date.now();
-          p.points.push({ t: p.t, p: ticker.price });
-          const cutoff = Date.now() / 1000 - 86400;
-          while (p.points.length && p.points[0].t < cutoff) p.points.shift();
-          if (p.points.length > 30000) p.points.splice(0, p.points.length - 30000);
-        }
+        spotWsLastFrame = Date.now();
+        ingestSpotTick(ticker.product_id, ticker.price, ticker.bid, ticker.ask, ticker.time, 'ws');
       },
       (err) => { console.error('[CoinbaseWS] Error:', err.message); },
       coinbaseAuth
     );
   coinbaseWS.connect();
+  // SPOT WATCHDOG (2026-11-06): a product with no fresh tick for 15s is
+  // backfilled over REST, and a WebSocket silent for 30s is recycled. The
+  // counters on each spot product (fresh/stale/duplicate) show what happened.
+  setInterval(() => {
+    try {
+      const now = Date.now();
+      const stale = SPOT_PRODUCTS.filter((p) => !spot[p].at || now - spot[p].at > 15000);
+      if (stale.length) { pollSpot(stale).catch(() => {}); }
+      if (now - spotWsLastFrame > 30000 && coinbaseWS.ws && coinbaseWS.ws.readyState === 1) {
+        console.error('[spot-watchdog] WebSocket silent ' + Math.round((now - spotWsLastFrame) / 1000) + 's, recycling');
+        spotWsLastFrame = now;
+        coinbaseWS.ws.close();
+      }
+    } catch (e) { }
+  }, 5000);
 
 
   // REQUEST THROTTLE - protects PC from API overload (initialized after all functions defined)
@@ -3809,10 +3879,12 @@ async function boot() {
     (fill) => { /* handle fill update */ },
     (order) => { /* handle order update */ }
   );
-  kalshiWS.connect();
-  kalshiWS.subscribeMarkets(seriesList);
-  kalshiWS.subscribeFills();
-  kalshiWS.subscribeOrders();
+  // KEY BUDGET (2026-11-06): DRY is paper and its fill/order handlers above are
+  // no-ops. Holding a signed WebSocket on the SHARED live Kalshi key only burned
+  // the rate budget that LIVE needs for /portfolio/balance (LIVE cash went null).
+  // Market quotes are REST (public, unsigned); the WS market channel is unavailable.
+  // kalshiWS.connect() / subscribe* intentionally NOT called in DRY.
+  void seriesList; void kalshiWS;
 
   // Main engine tick - evaluates all lanes every 2 seconds
   // TICK GUARD + DEADLINE (stale-HYPE incident): a hung network await used to

@@ -69,9 +69,13 @@ function verify(q, now) {
     basis = 'ws'; ageMs = now - liveAt;
     if (ageMs > MAX_AGE_MS) reasons.push('STALE');
   } else if (Number.isFinite(mktUpd)) {
-    // The REST market record is static, but its updated_time is the moment the
-    // BOOK last changed. A book that has not changed since then is not stale.
-    basis = 'rest'; ageMs = now - mktUpd;
+    // REST basis (2026-11-06 fix): the record is exactly as fresh as the fetch
+    // that produced it (observed_at). Measuring against the book's last-change
+    // time refused every quiet-but-real book after 2 minutes (KXBTC15M sat
+    // BAD:STALE with a live, correct quote, so ALL NO had no candidate at all).
+    basis = 'rest';
+    const fetchedAt = Number(q && q.observed_at);
+    ageMs = Number.isFinite(fetchedAt) ? now - fetchedAt : now - mktUpd;
     if (ageMs > MAX_REST_AGE_MS) reasons.push('STALE');
   } else {
     ageMs = now - Number(q && q.observed_at || now);
