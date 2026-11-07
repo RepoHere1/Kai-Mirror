@@ -932,6 +932,26 @@ const CALIB = calibrationMod.create({ dbRun, dbAll, dbFile: DB_FILE, log: (k, o)
 const HARVEST = harvesterMod.create({ CALIB, FILLSIM, getState: () => state, log: (k, o) => { try { log(k, o); } catch (e) {} }, persistTrade });
 CALIB.init().catch((e) => { console.error('[calibration] boot failed:', e.message); });
 
+// ALPHA GATE (Mirror port 2026-11-07): same measured-verdict engine as LIVE.
+// In the Mirror it runs in REPORT-CLAMP mode: dry is the proof ground, so a
+// refuted verdict clamps paper size to 1 contract instead of blocking (LIVE
+// enforces the hard block). Verdicts can only change from outcomes, and dry
+// is where outcomes are cheapest to earn. See alpha_gate.js.
+const ALPHA = require('./alpha_gate').create({
+  getTrades: () => state.dry.closed || [],
+  certaintyStats: () => { try { return FACTS.certaintyStats(); } catch (e) { return null; } },
+  vaccine: () => { try { return (CALIB.snapshot() || {}).vaccine_gate || null; } catch (e) { return null; } },
+  log: (k, o) => { try { log(k, o); } catch (e) {} },
+});
+function spotAgeMs(asset) {
+  const s = spot[asset];
+  if (!s) return null;
+  const ms = (x) => { const n = Number(x) || 0; if (n > 1e12) return n; if (n > 1e9) return n * 1000; return 0; };
+  const lastPoint = (s.points && s.points.length) ? s.points[s.points.length - 1] : null;
+  const last = Math.max(ms(s.at), lastPoint ? ms(lastPoint.t) : 0);
+  return last > 0 ? Date.now() - last : null;
+}
+
 // BOOT COUNTER: every process start bumps this; the tape PULSE prints it so
 // silent watchdog restart loops become visible.
 state.boot_count = (state.boot_count || 0) + 1;
@@ -1510,7 +1530,31 @@ function openDryPosition(lane, q, side, price, fair, edge, sigma, opts) {
   // exceeded the cap - that is exactly how a $0.61 KXBTC15M YES slipped through
   // on 2026-11-04. If no whole contract fits the cap, we SKIP, never force.
   const cap = effectiveClip();
-  const qty = Math.floor(cap / price);
+  let qty = Math.floor(cap / price);
+  // ALPHA GATE (Mirror port, 2026-11-07): dry runs the same measured verdict
+  // engine as LIVE, in REPORT-CLAMP mode - refuted/unproven clamp paper size
+  // to 1 contract (never block: dry is where proof is earned).
+  if (typeof ALPHA !== 'undefined' && ALPHA) {
+    const av = ALPHA.verdict(lane && lane.name);
+    if (av && av.max_qty != null) {
+      const target = av.max_qty === 0 ? 1 : av.max_qty;
+      if (qty > target) {
+        qty = target;
+        log('alpha_gate_clamped', { lane: lane.name, ticker: q.ticker, verdict: av.verdict, reason: av.reason, qty });
+      }
+    }
+  }
+  // FEED GATE (2026-11-07): a stale spot feed makes fair values fiction even
+  // in paper. No fresh tick, no dry trade.
+  if (lane && lane.spot) {
+    const age = spotAgeMs(lane.spot);
+    if (age != null && age > 3000) {
+      const lsf = laneState(lane.name);
+      lsf.skips++; lsf.last_skip = 'spot feed stale ' + Math.round(age / 1000) + 's (' + lane.spot + ')';
+      log('spot_stale_refused', { lane: lane.name, ticker: q.ticker, asset: lane.spot, age_ms: age });
+      return null;
+    }
+  }
   if (qty < 1) { const ls = laneState(lane.name); ls.skips++; ls.last_skip = 'price $' + price.toFixed(2) + ' > order cap $' + cap.toFixed(2) + ' (no contract fits)'; return null; }
   // CROSS-LANE ANTI-STACK + CLUSTER CAP (2026-11-04 operator order: lanes
   // trade the evidence zone like all_no). Lanes used to check only their own
@@ -2907,6 +2951,11 @@ async function handle(req, res) {
   // THE VACCINE, VISIBLE: per-bucket realized win rates vs claimed fairs —
   // the empirical probability table every entry is now gated against.
   if (p === '/api/calibration') return json(res, CALIB.snapshot());
+if (p === '/api/alpha') {
+  // Measured-edge verdicts (Mirror, report-clamp mode): what the same gate
+  // that LIVE enforces says about the dry record.
+  return json(res, ALPHA.report());
+}
   // THE HARVESTER, VISIBLE: resting-order stats, fill rate, settled EV.
   if (p === '/api/harvester') return json(res, HARVEST.snapshot());
   if (p === '/api/cache') return json(res, { ok: true, stats: kalshi.getCacheStats ? kalshi.getCacheStats() : { error: 'not available' } });
