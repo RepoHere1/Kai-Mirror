@@ -30,3 +30,6 @@ _tape_snap/
 # backtester outputs (generated)
 backtest_results.json
 backtest_cache/
+
+detective_results.json
+detective_rows.jsonl

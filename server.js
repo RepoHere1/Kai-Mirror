@@ -677,7 +677,25 @@ const OPERATOR_LAW = Object.freeze({
       throw new Error(msg);
     }
   },
+  // ---- OPERATOR LAW 2026-11-07: NO FEE-ATTACHED EXITS ----------------------
+  // stop_loss / take_profit / trail_stop exits pay a second taker fee and
+  // historically destroyed the book (LIVE evidence: 119 stop exits, 0 winners,
+  // -$175.36). They are FORBIDDEN on every book. Positions ride to settlement;
+  // the per-order size is the loss limit. Re-adding ANY fee-attached exit
+  // requires the operator's express written say-so in OPERATOR_LAWS.md first.
+  feeExitDecree: 'NO stop_loss, NO take_profit, NO trail_stop (2026-11-07). Ride to settlement; per-order size is the loss limit.',
+  allowedExitReasons: ['settled', 'manual', 'hold_rule', 'flatten_feed_death'],
+  assertNoFeeExit: function(reason) {
+    const r = String(reason || 'settled').toLowerCase();
+    const ok = this.allowedExitReasons.some((a) => r === a || r.startsWith(a));
+    if (!ok) {
+      const msg = 'OPERATOR_LAW VIOLATION: fee-attached exit "' + reason + '" is forbidden. ' + this.feeExitDecree;
+      console.error('[OPERATOR_LAW]', msg);
+      throw new Error(msg);
+    }
+  },
   assertNoSupervisor: function() {
+
     // Runtime guard - if any code tries to spawn a supervisor, it dies here.
     if (global.__KAI_SUPERVISOR_SPAWNED) {
       throw new Error('OPERATOR_LAW: Supervisor spawn detected - exterminated.');
@@ -754,7 +772,7 @@ function defaultState() {
     max_price: 0.50, // EVIDENCE ZONE 2026-11-04 (was 0.99)
     min_price: 0.30, // EVIDENCE ZONE 2026-11-04 (was 0.005)
     take_profit: null,   // DEAD (operator order, 2026-11-03): winners ride to settlement
-    stop_loss: 0.1,
+    stop_loss: 0, // OPERATOR LAW 2026-11-07: DEAD config. Fee exits are forbidden on the paper book too; stops are stored null and nothing fires them.
     // TRAIL STOP EXTERMINATED (operator law): trail exits sold 86.7%-
     // would-be-settled winners; the code is DELETED, not gated.
     kelly_cap: 0.95,
@@ -1570,9 +1588,10 @@ function openDryPosition(lane, q, side, price, fair, edge, sigma, opts) {
   if (marketEntryCount(q.ticker) >= MAX_MARKET_ENTRIES) { const lsc = laneState(lane.name); lsc.skips++; lsc.last_skip = 'lifetime cap: ' + q.ticker + ' already entered ' + MAX_MARKET_ENTRIES + 'x'; return null; }
   const cost = Number((qty * price).toFixed(4));
   if (dryCash() < cost) { const ls = laneState(lane.name); ls.skips++; ls.last_skip = 'insufficient dry cash'; return null; }
-  const stop = Number((price * (1 - state.runtime.stop_loss)).toFixed(3));
-  // Winners ride: take profit only near-certainty (0.95), else settle at $1.
-  const tp = Number(Math.min(0.98, 0.95).toFixed(3));
+  // OPERATOR LAW 2026-11-07 (OPERATOR_LAWS.md): NO fee-attached exits. The
+  // paper book mirrors the live law exactly so dry data predicts live behavior.
+  const stop = null;
+  const tp = null;
   // Capture bid/ask at entry for fill quality tracking
   const bid_at_entry = side === 'YES' ? q.yes_bid : q.no_bid;
   const ask_at_entry = side === 'YES' ? q.yes_ask : q.no_ask;
@@ -2919,6 +2938,11 @@ async function handle(req, res) {
   if (p === '/api/certainty') {
     return json(res, await FACTS.certaintyStats());
   }
+  if (p === '/api/detective') {
+    // SUPER-DETECTIVE (operator commission 2026-11-07): what the always-on
+    // factual edge miner sees right now, across every prediction-market source.
+    return json(res, DETECTIVE.snapshot());
+  }
   if (p === '/api/facts') {
     const mm = /[?&]minutes=(\d+)/.exec(req.url || '');
     const rows = await FACTS.recent(mm ? Number(mm[1]) : 10, 300);
@@ -3968,10 +3992,21 @@ async function runAllNoExits() {
   }
 }
 
+// SUPER-DETECTIVE (operator commission 2026-11-07): always-on factual-edge
+// discovery across Kalshi + Polymarket + Manifold + our own settled trades.
+// It never trades; it reports. Surface: GET /api/detective + DETECTIVE tape line.
+const DETECTIVE = require('./detective').create({
+  dbAll,
+  kalshiGet: (p, o) => kalshi.get(p, o),
+  log: (k, o) => { try { log(k, o); } catch (e) {} },
+  here: HERE,
+});
+
 async function boot() {
   // OPERATOR_LAW: Assert no supervisor exists or can be spawned.
   OPERATOR_LAW.assertNoSupervisor();
   OPERATOR_LAW.enforce('boot', { action: 'server_start', mode: 'dry' });
+  DETECTIVE.start(); // super-detective: always-on factual edge mining (2026-11-07)
   // Real boot time (the persisted booted_at used to leak across restarts and
   // show fake 50-hour uptimes in /api/health).
   state.booted_at = new Date().toISOString();
