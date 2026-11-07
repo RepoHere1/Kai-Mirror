@@ -2865,7 +2865,7 @@ async function handle(req, res) {
   // --- static pages: Kai-Mirror serves the DRY book - the ONLY book on this
   // server - plus the NO-side book. There is no DRY page here and no
   // client-side mode flipping: a page IS a book.
-  if (p === '/' || p === '/index.html' || p === '/dry' || p === '/dry' || p === '/dry-home.html') {
+  if (p === '/' || p === '/index.html' || p === '/dry' || p === '/dry/' || p === '/dry-home.html') {
     return serveDashboard('/dry', res);
   }
   if (p === '/all-no-markets') {
@@ -4145,7 +4145,7 @@ setInterval(() => { try { makerKillSweep(); } catch (e) { } }, 30000);
     console.log('  kalshi dry  :', kalshi.LIVE_BASE);
     console.log('  kalshi demo  :', kalshi.DEMO_BASE, '(fallback)');
     console.log('  spot         : Coinbase Exchange public ticker');
-    console.log('  llm          :', ENV.KILO_BASE_URL, 'model', ENV.KILO_MODEL);
+    console.log('  llm          :', ENV.KILO_BASE_URL || 'https://ai-gateway.kilo.ai/api/v1', 'model', ENV.KILO_MODEL || 'auto/free');
     console.log('  mode         :', 'dry', '| dry_balance:', state.dry ? state.dry.starting_balance : 'N/A');
     // Lanes start/stop is operator-controlled only. No auto-start.
     save();
