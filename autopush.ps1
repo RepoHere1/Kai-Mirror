@@ -4,11 +4,13 @@
 # Never force-pushes, never adds untracked probe junk, never touches state.json /
 # trading.db / .env (all gitignored). Log: autopush.log (gitignored).
 $ErrorActionPreference = 'Continue'
+# 2026-11-07: portable sibling-repo discovery (old box hardcoded C:\Users\darri\...).
+$KaiRoot = Split-Path $PSScriptRoot -Parent
 $repos = @(
-  @{ Dir = 'C:\Users\darri\Kai-Mirror'; Extra = @('backtest.js', 'strategies', 'backtest_results.json') },
-  @{ Dir = 'C:\Users\darri\Kai-LIVE';   Extra = @('backtest.js', 'strategies') }
+  @{ Dir = Join-Path $KaiRoot 'Kai-Mirror'; Extra = @('backtest.js', 'strategies', 'backtest_results.json') },
+  @{ Dir = Join-Path $KaiRoot 'Kai-LIVE';   Extra = @('backtest.js', 'strategies') }
 )
-$log = 'C:\Users\darri\Kai-Mirror\autopush.log'
+$log = Join-Path (Join-Path $KaiRoot 'Kai-Mirror') 'autopush.log'
 function Write-Log($m) { Add-Content -LiteralPath $log -Value ((Get-Date -Format 'yyyy-MM-dd HH:mm:ss') + ' ' + $m) }
 foreach ($r in $repos) {
   $d = $r.Dir
