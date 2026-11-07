@@ -1,6 +1,0 @@
-fetched XRP-USD 5664
-ERR ETH-USD 1793572784 The read operation timed out
-fetched ETH-USD 5736
-fetched BTC-USD 5711
-fetched HYPE-USD 5569
-DONE

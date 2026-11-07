@@ -1,8 +1,0 @@
-LIVE fully wired: shards, auth fix, real Kalshi API working
-
-- Fixed Kalshi signature strategy: portfolio endpoints now try withQuery: false first
-- Added PORTFOLIO_STRATEGIES for /portfolio/* routes (no query string in signature)
-- Shard accounts populated from API: crypto=exchange_index 2, politics=1, sports=3, finance=0
-- LIVE accounts endpoint returns real data: 100 closed trades, 100% win rate
-- DRY: $303 paper, all lanes running
-- Both servers running with request throttle (max 3 concurrent, 500ms interval)

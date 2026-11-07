@@ -3575,8 +3575,8 @@ const ALL_NO_CONFIG = {
   max_gap: 0.01,
   maker_only: true,
   max_hold_pct: 0.75,             // exit at 75% lifetime
-  stop_loss_pct: 0.15,            // 15% base stop
-  take_profit_mult: 2.5,          // 2.5:1 reward:risk
+  // (stop_loss_pct / take_profit_mult removed 2026-11-07 - OPERATOR LAW:
+  // fee-attached exits are forbidden; vestigial stop/tp config is dead.)
   min_spread: 0.005,              // minimum spread
   max_spread: 0.04,               // maximum spread
   min_tau_sec: 30,                // minimum time to expiry
