@@ -2448,7 +2448,7 @@ async function noBook() {
         // lives in CODE, not runtime config — the Oct 26 config surgery that
         // raised max_edge to 0.30 is exactly how 1,136 zero-win entries got
         // made. No runtime override may ever raise it.
-        if (e > MAX_CLAIMED_EDGE) { sk('edge_above_code_cap'); return; }
+        if (e > MAX_CLAIMED_EDGE) { sk('edge_above_code_cap'); antiBook(q, side, bid, fairSide, null, perSec || null, tau, sp); return; }
         // THE VACCINE: the claimed fair is a hypothesis, not a probability.
         // The bucket's REALIZED record (with market price as prior) is the
         // only probability we trade against. Blocked candidates become free
@@ -2464,6 +2464,10 @@ async function noBook() {
             claimed: fairSide, price: bid, gate: cal,
             sigma: perSec || null, tau, strike: q.strike, spot: (sp && sp.price) || null,
           });
+          // FADE-THE-MODEL (2026-11-08): a refused OVERSTATEMENT is the one
+          // refusal the ledger itself says was right to refuse — the anti
+          // side is the candidate worth measuring (see antiBook).
+          antiBook(q, side, bid, fairSide, cal, perSec || null, tau, sp);
           return;
         }
         const kelly = Math.max(0, e / (1 - bid));
@@ -2548,6 +2552,93 @@ async function getAllTradableSeries() {
 // ---------------------------------------------------------------------------
 // ALL NO MARKETS - Entry/Exit Trade Functions
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// THE FADE-THE-MODEL LANE (operator order 2026-11-08): "do the opposite of
+// what you think, in dry." The honest version of that instinct. The PURE
+// inverse of every loser cannot win (fees + spread + noise hit both sides,
+// and inverting a coin is the same coin) — but this repo's own forensics
+// convicted the MODEL of systematic overstatement: btc_1h NO@6-8c claimed
+// fair 0.65+ went 0/1136, meaning the market side (YES@93c) won 1136/1136 at
+// ~+7c each. So: when the calibration ledger CONVICTS a zone WITH EVIDENCE
+// (claimed - realized >= threshold on a warm bucket), this lane buys the
+// OTHER side in DRY at the complement price. The dry book and /api/shadow
+// then settle it against reality — if the fade prints, the operator was
+// right; if fees/spread/noise eat it, the numbers say so. Proof, not opinion.
+// ---------------------------------------------------------------------------
+const ANTI_DEFAULTS = {
+  enabled: true,
+  min_overstatement: 0.10,   // conviction floor: claimed - adjusted must clear this
+  min_evidence_n: 20,        // bucket or zone must carry this many settled rows (not noise)
+  min_edge: 0.03,            // anti-side empirical edge after paying the complement price
+  max_price: 0.97,           // never pay more for the anti side
+  min_price: 0.55,           // below this the "opposite" is the same lottery, not a fade
+  max_concurrent: 6,
+  notional_dollars: 0.50,    // operator law: every order <= $0.50
+};
+const antiTried = new Map(); // ticker -> ts (10min per-ticker cooldown)
+function antiCfg() {
+  return Object.assign({}, ANTI_DEFAULTS, (state.runtime.all_no && state.runtime.all_no.anti_model) || {});
+}
+function antiBook(q, side, bid, fairSide, calIn, perSec, tau, sp) {
+  try {
+    const cfg = antiCfg();
+    const ls = laneState('anti_model');
+    ls.heartbeat = new Date().toISOString();
+    if (!cfg.enabled) { ls.last_skip = 'lane disabled in config'; return; }
+    if (hourBlockedUtc()) { ls.skips++; ls.last_skip = 'trading-hours law: blocked UTC hour ' + new Date().getUTCHours() + 'Z'; return; }
+    const t = antiTried.get(q.ticker);
+    if (t && Date.now() - t < 10 * 60 * 1000) return;
+    // The ledger verdict (recomputed for the too-good-to-be-true refusals,
+    // which never reach the calibration gate on their own path).
+    let cal = calIn;
+    if (!cal) cal = CALIB.gate({ ticker: q.ticker, side, strategy: 'all_no_markets', claimed: fairSide, price: bid, minEdge: 0.05 });
+    // CONVICTION: the ledger must have caught the model lying, with evidence.
+    // Every filter step names its skip reason so the operator can SEE why the
+    // fade did or did not fire - the lane is auditable, not a black box.
+    const overstatement = Number(cal.bias);
+    if (!Number.isFinite(overstatement) || overstatement < cfg.min_overstatement) { ls.skips++; ls.last_skip = 'no conviction (bias ' + (Number.isFinite(overstatement) ? overstatement.toFixed(3) : '?') + ' < ' + cfg.min_overstatement + ')'; return; }
+    const evN = Math.max(cal.n || 0, cal.zone_n || 0);
+    if (evN < cfg.min_evidence_n) { ls.skips++; ls.last_skip = 'conviction thin (n=' + evN + ')'; return; }
+    // The anti side: buy the OTHER side of the SAME market at the complement.
+    const antiSide = side === 'YES' ? 'NO' : 'YES';
+    const antiPrice = Math.round((1 - bid) * 100) / 100;
+    if (!(antiPrice >= cfg.min_price && antiPrice <= cfg.max_price)) { ls.skips++; ls.last_skip = 'anti price ' + antiPrice.toFixed(2) + ' outside ' + cfg.min_price + '-' + cfg.max_price; return; }
+    const antiProb = 1 - (Number.isFinite(Number(cal.adjusted)) ? Number(cal.adjusted) : bid);
+    const edge = antiProb - antiPrice;
+    if (!(edge >= cfg.min_edge)) { ls.skips++; ls.last_skip = 'anti edge ' + edge.toFixed(3) + ' < ' + cfg.min_edge + ' (fees/spread eat it)'; return; }
+    const book = state.all_no[state.mode];
+    if (!book) return;
+    const openAnti = book.positions.filter(p => (p.strategy || '') === 'anti_model' && p.status === 'resting');
+    if (openAnti.length >= cfg.max_concurrent) { ls.last_skip = 'max concurrent anti positions'; return; }
+    // Never hold both sides of one market (the dry book may want the
+    // convicted side for its own evidence; the fade takes only the mirror).
+    if (book.positions.some(p => p.market_id === q.ticker && p.status === 'resting')) return;
+    const qty = Math.max(1, Math.floor(cfg.notional_dollars / antiPrice));
+    const res = createAllNoEntry(q.ticker, antiPrice, qty, Number(antiProb.toFixed(4)), Number(edge.toFixed(4)), 0, null, null, 1, q.close_time, {
+      strategy: 'anti_model', side: antiSide,
+      strike: q.strike != null ? q.strike : null, sigma: perSec || null,
+      anti: { faded_side: side, faded_claimed: Number(fairSide.toFixed(4)), faded_price: bid, conviction: Number(overstatement.toFixed(4)), evidence_n: evN },
+    });
+    antiTried.set(q.ticker, Date.now());
+    if (res && res.ok) {
+      ls.entries++; ls.last_edge = Number(edge.toFixed(4));
+      log('anti_model_entry', {
+        market_id: q.ticker, side: antiSide, px: antiPrice, qty,
+        faded: side + '@' + bid, claimed: Number(fairSide.toFixed(3)),
+        conviction: Number(overstatement.toFixed(3)), evidence_n: evN,
+        empirical_prob: Number(antiProb.toFixed(3)), edge: Number(edge.toFixed(3)),
+      });
+      // Free double-entry: the vaccine ledger learns the anti zone too, and
+      // /api/shadow will grade THIS idea by its own settled rows.
+      CALIB.shadowOpen({ ticker: q.ticker, side: antiSide, strategy: 'anti_model', claimed: antiProb, price: antiPrice, sigma: perSec || null, tau, strike: q.strike != null ? q.strike : null, spot: (sp && sp.price) || null });
+    } else if (res && res.error) {
+      ls.skips++; ls.last_skip = 'entry refused: ' + res.error;
+    }
+  } catch (e) {
+    try { log('anti_model_error', { error: String(e && e.message || e).slice(0, 200) }); } catch (e2) { }
+  }
+}
+
 function createAllNoEntry(market_id, entry_price, quantity, fair_at_entry, edge, kelly, stop_loss, take_profit, confidence, expiration, extra) {
   // OPERATOR RULE (2026-11-06): a trade must close within 30 days of opening.
   // HOLD RULE: fail-closed - missing/invalid close_time blocks the entry
@@ -3937,6 +4028,7 @@ async function runAllNoEngine() {
   const noLs = laneState('all_no_markets');
   if (!noLs || !noLs.running) return;
   noLs.heartbeat = new Date().toISOString(); // scanner-alive truth every pass
+  laneState('anti_model').heartbeat = noLs.heartbeat; // fade lane rides the same scan
   
   // Operator runtime config wins over code defaults.
   const cfg = Object.assign({}, ALL_NO_CONFIG, state.runtime.all_no || {});

@@ -80,6 +80,28 @@ node alpha_gate.test.js  # promotion gate
   shadow evidence keeps flowing from every hour. Config
   `state.runtime.trading_hours.blocked_utc` (empty = off).
 
+## FADE-THE-MODEL lane (operator order 2026-11-08)
+
+"Do the opposite of what you think, in dry." The pure inverse of every loser
+cannot win (fees + spread + noise hit both sides), but the repo's forensics
+convicted the MODEL of systematic overstatement: btc_1h NO@6-8c claimed fair
+0.65+ went 0/1136 — the market side (YES@93c) won 1136/1136 at ~+7c each.
+So `anti_model` buys the OTHER side of a refused candidate in DRY when the
+calibration ledger convicts the zone WITH EVIDENCE:
+
+- conviction: claimed - adjusted >= 0.10 on the gate verdict,
+- evidence: bucket or price-zone has >= 20 settled rows (never fades on noise),
+- economics: anti price (1-bid) in 0.55-0.97 and empirical anti edge >= 3c
+  (anti edge = bid - adjusted: the market-overpricing gap the LEDGER measured),
+- same laws as every lane: $0.50/order cap, max 6 concurrent, 10-min per-ticker
+  cooldown, never both sides of one market, 21Z/23Z hours law.
+
+Every filter names its skip reason (`state.lanes.anti_model.last_skip`). Each
+entry is double-booked: a dry position (real settlement P&L) AND a shadow row
+(strategy `anti_model`) — so `/api/shadow` grades the idea by its own settled
+rows. If the fade prints, the operator was right; if fees eat it, the numbers
+say so. Config: `state.runtime.all_no.anti_model`.
+
 ## Hygiene law (2026-11-07)
 
 Session debris (one-off fix scripts, probe droppings, snapshot dumps) is
