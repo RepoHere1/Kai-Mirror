@@ -132,7 +132,7 @@ const db = new sqlite3.Database(DB_FILE);
 //      fast. Must be configured BEFORE the first statement runs.
 //   2. a callback on EVERY statement - a residual failure is delivered to the
 //      caller instead of becoming an unhandled 'error' event.
-// The proof lives in test_sqlite_busy.js.
+// The proof lived in test_sqlite_busy.js (kept in git history; removed 2026-11-07).
 db.configure('busyTimeout', 5000);
 
 function dbLogError(scope, err) {
@@ -2828,26 +2828,15 @@ async function serveDashboard(route, res) {
 }
 
 async function serveYesMarkets(res) {
-  // YES side of the ALL NO book: same white-ledger page, YES rows only
-  // (the page reads /api/no-lanes/book?side=YES).
-  const file = path.join(HERE, 'yes-markets.html');
-  try {
-    const html = fs.readFileSync(file, 'utf8');
-    res.writeHead(200, { 'Content-Type': MIME['.html'], 'Cache-Control': 'no-store' });
-    return res.end(html);
-  } catch (e) { res.writeHead(500); return res.end('page missing: ' + e.message); }
+  // REMOVED 2026-11-07: yes-markets.html page purged (dead UI). Route deleted.
+  res.writeHead(404, { 'Content-Type': 'text/plain' });
+  return res.end('gone');
 }
 
 async function serveAllNoMarkets(res) {
-  // ALL NO MARKETS: separate white-ledger page with independent book data
-  const file = path.join(HERE, 'all-no-markets.html');
-  try {
-    let html = fs.readFileSync(file, 'utf8');
-    // TODO: In Phase 2, inject ALL NO book data here (open positions, closed trades, tallies)
-    // For now, page loads data via /api/no-lanes/book on client side
-    res.writeHead(200, { 'Content-Type': MIME['.html'], 'Cache-Control': 'no-store' });
-    return res.end(html);
-  } catch (e) { res.writeHead(500); return res.end('page missing: ' + e.message); }
+  // REMOVED 2026-11-07: all-no-markets.html page purged (dead UI). Route deleted.
+  res.writeHead(404, { 'Content-Type': 'text/plain' });
+  return res.end('gone');
 }
 
   async function fireWebhooks(event, data) {
@@ -2886,12 +2875,6 @@ async function handle(req, res) {
   // client-side mode flipping: a page IS a book.
   if (p === '/' || p === '/index.html' || p === '/dry' || p === '/dry/' || p === '/dry-home.html') {
     return serveDashboard('/dry', res);
-  }
-  if (p === '/all-no-markets') {
-    return serveAllNoMarkets(res);
-  }
-  if (p === '/yes-markets') {
-    return serveYesMarkets(res);
   }
   if (/^\/[A-Za-z0-9_.\-]+\.(js|css|png|svg|json)$/.test(p)) {
     const file = path.join(HERE, path.basename(p));
@@ -4072,12 +4055,20 @@ async function boot() {
   const THROTTLE = {
     maxConcurrent: 3,           // max simultaneous requests
     minIntervalMs: 500,         // min ms between requests
-    queue: [],
-    running: 0,
+    maxQueue: 200,              // 2026-11-07 OOM LAW: queue is CAPPED. During a
+                                // Kalshi outage producers outrun drain and the old
+    queue: [],                  // UNBOUNDED queue pinned every pending scan's whole
+    running: 0,                 // async context -> 4GB heap death (~64MB/min).
     lastRequestTime: 0,
-    
+    dropped: 0,
+
     async run(fn) {
       return new Promise((resolve, reject) => {
+        if (this.queue.length >= this.maxQueue) {
+          this.dropped++;
+          if (this.dropped % 250 === 1) console.warn('[throttle] queue full (' + this.maxQueue + ') - dropped ' + this.dropped + ' calls (outage backpressure)');
+          return reject(new Error('throttle_overflow: queue full (' + this.maxQueue + ')'));
+        }
         this.queue.push({ fn, resolve, reject });
         this.process();
       });
@@ -4138,7 +4129,15 @@ async function boot() {
   }, 3000);
 
   // ALL NO engine - runs every 10s for entries, every 5s for exits
-  setInterval(runAllNoEngine, ALL_NO_CONFIG.scan_interval_ms);
+  // OOM LAW (2026-11-07): busy-flag + clamp - a pass may never overlap-pile
+  // (the LIVE twin died at 4GB heap from an undefined interval + outage hangs;
+  // Mirror read a safe constant, but the guard is cheap insurance).
+  let allNoPassInFlight = false;
+  setInterval(() => {
+    if (allNoPassInFlight) return;
+    allNoPassInFlight = true;
+    Promise.resolve(runAllNoEngine()).catch(() => { }).finally(() => { allNoPassInFlight = false; });
+  }, Math.max(2000, Number(ALL_NO_CONFIG.scan_interval_ms) || 10000));
 setInterval(() => { try { makerKillSweep(); } catch (e) { } }, 30000);
   setInterval(runAllNoExits, 5000);
   // THE CERTAINTY LANE scans on its own clock (the window is only minutes
