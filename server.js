@@ -2423,13 +2423,13 @@ async function noBook() {
         // FAT-TAIL MARGIN: HYPE's jumps crush a smooth gaussian model. Demand
         // more probability margin there.
         const fairFloor = asset === 'HYPE-USD' ? Math.max(anCfg.min_fair, 0.58) : anCfg.min_fair;
-        if (fairSide < fairFloor) { sk('fair_below_floor'); return; }                   // probability floor
+        if (fairSide < fairFloor) { sk('fair_below_floor'); sabotageBook({ strategy: 'refused:fair-floor', market_id: q.ticker, side, entry_price: bid, fair: fairSide, expiration: q.close_time, strike: q.strike }); return; }                   // probability floor
         // CONFIDENCE CEILING (2026-11-03 calibration): the model's loudest claims
         // were its worst - LIVE fair .80+ won 50%, .55-.60 won 0/8, .62-.75 won 72.5%.
         // max_fair unset = 9.99 = ceiling disabled, so the lab keeps sampling this zone.
-        if (fairSide > (anCfg.max_fair != null ? anCfg.max_fair : 9.99)) { sk('fair_above_ceiling'); return; }
-        if (bid > cap) { sk('bid_above_cap'); return; }                              // price cap (cheap only)
-        if (bid < (anCfg.min_entry_price || 0)) { sk('bid_below_min_entry'); return; }     // no sub-floor lottery tickets
+        if (fairSide > (anCfg.max_fair != null ? anCfg.max_fair : 9.99)) { sk('fair_above_ceiling'); sabotageBook({ strategy: 'refused:fair-ceiling', market_id: q.ticker, side, entry_price: bid, fair: fairSide, expiration: q.close_time, strike: q.strike }); return; }
+        if (bid > cap) { sk('bid_above_cap'); sabotageBook({ strategy: 'refused:price-cap', market_id: q.ticker, side, entry_price: bid, fair: fairSide, expiration: q.close_time, strike: q.strike }); return; }                              // price cap (cheap only)
+        if (bid < (anCfg.min_entry_price || 0)) { sk('bid_below_min_entry'); sabotageBook({ strategy: 'refused:lottery-floor', market_id: q.ticker, side, entry_price: bid, fair: fairSide, expiration: q.close_time, strike: q.strike }); return; }     // no sub-floor lottery tickets
         // MOMENTUM CONFIRMATION: the gaussian model knows only distance from
         // strike. Winners entered while the move AWAY from the strike was
         // continuing; losers were reversals. Block entries when spot is
@@ -2438,17 +2438,17 @@ async function noBook() {
         if (pts.length >= 31 && perSec) {
           const mom = (sp.price - pts[pts.length - 31].p) / pts[pts.length - 31].p;
           const drift60 = 0.5 * perSec * Math.sqrt(60);
-          if (side === 'NO' && mom > drift60) { sk('momentum_block'); return; }   // spot rising toward strike
-          if (side === 'YES' && mom < -drift60) { sk('momentum_block'); return; } // spot falling toward strike
+          if (side === 'NO' && mom > drift60) { sk('momentum_block'); sabotageBook({ strategy: 'refused:momentum', market_id: q.ticker, side, entry_price: bid, fair: fairSide, expiration: q.close_time, strike: q.strike }); return; }   // spot rising toward strike
+          if (side === 'YES' && mom < -drift60) { sk('momentum_block'); sabotageBook({ strategy: 'refused:momentum', market_id: q.ticker, side, entry_price: bid, fair: fairSide, expiration: q.close_time, strike: q.strike }); return; } // spot falling toward strike
         }
         const e = fairSide - bid;                           // REAL maker edge
-        if (e < anCfg.min_edge) { sk('edge_below_min'); return; }
+        if (e < anCfg.min_edge) { sk('edge_below_min'); sabotageBook({ strategy: 'refused:edge-min', market_id: q.ticker, side, entry_price: bid, fair: fairSide, expiration: q.close_time, strike: q.strike }); return; }
         // TOO-GOOD FILTER (CODE LAW 2026-11-04): an edge > 0.15 means the
         // MODEL is wrong, not that the market is giving money away. This cap
         // lives in CODE, not runtime config — the Oct 26 config surgery that
         // raised max_edge to 0.30 is exactly how 1,136 zero-win entries got
         // made. No runtime override may ever raise it.
-        if (e > MAX_CLAIMED_EDGE) { sk('edge_above_code_cap'); antiBook(q, side, bid, fairSide, null, perSec || null, tau, sp); sabotageBook({ strategy: 'refused:edge-cap', market_id: q.ticker, side, entry_price: bid, expiration: q.close_time, strike: q.strike }); return; }
+        if (e > MAX_CLAIMED_EDGE) { sk('edge_above_code_cap'); antiBook(q, side, bid, fairSide, null, perSec || null, tau, sp); sabotageBook({ strategy: 'refused:edge-cap', market_id: q.ticker, side, entry_price: bid, fair: fairSide, expiration: q.close_time, strike: q.strike }); return; }
         // THE VACCINE: the claimed fair is a hypothesis, not a probability.
         // The bucket's REALIZED record (with market price as prior) is the
         // only probability we trade against. Blocked candidates become free
@@ -2471,7 +2471,7 @@ async function noBook() {
           // SABOTAGE BOOK (operator order 2026-11-08): and the losing book
           // BUYS the refused side itself - the exact trade the vaccine exists
           // to prevent. Designed to lose, quarantined, measured.
-          sabotageBook({ strategy: 'refused:vaccine', market_id: q.ticker, side, entry_price: bid, expiration: q.close_time, strike: q.strike });
+          sabotageBook({ strategy: 'refused:vaccine', market_id: q.ticker, side, entry_price: bid, fair: fairSide, expiration: q.close_time, strike: q.strike });
           return;
         }
         const kelly = Math.max(0, e / (1 - bid));
@@ -2655,8 +2655,9 @@ function antiBook(q, side, bid, fairSide, calIn, perSec, tau, sp) {
 // /api/inverse shows BOTH columns - what the losing code did, and the exact
 // opposite - so the inversion hypothesis is measured with numbers, not argued.
 // ---------------------------------------------------------------------------
-const SABOTAGE_DEFAULTS = { enabled: true, balance_start: 100, notional_dollars: 0.50, max_concurrent: 10 };
-const sabTried = new Map(); // ticker -> ts (5-min cooldown on refusal buys)
+const SABOTAGE_DEFAULTS = { enabled: true, balance_start: 100, notional_dollars: 0.50, max_concurrent: 30, recharge_below: 10, recharge_to: 100 };
+const SAB_COOLDOWN_MS = 3 * 60 * 1000; // per-ticker cooldown on designed-loser buys
+const sabTried = new Map(); // ticker -> ts
 function sabotageState() {
   if (!state.sabotage) state.sabotage = {
     balance: SABOTAGE_DEFAULTS.balance_start, positions: [], history: [],
@@ -2669,25 +2670,47 @@ function sabotageBook(position) {
     if (!SABOTAGE_DEFAULTS.enabled) return;
     const sb = sabotageState();
     if (position.strategy === 'sabotage') return;              // never mirror itself
-    const isRefusal = String(position.strategy || '').startsWith('refused');
-    if (isRefusal) {
-      const t = sabTried.get(position.market_id);
-      if (t && Date.now() - t < 5 * 60 * 1000) return;         // refused every pass; buy it rarely
-      sabTried.set(position.market_id, Date.now());
+    // DRY PAPER, QUARANTINED: this book cannot pause - it recharges so the
+    // losing experiment runs until the operator stops it. Total drain is
+    // tracked (stats.recharged) - the balance is a display, not a budget.
+    if (sb.balance < SABOTAGE_DEFAULTS.recharge_below) {
+      const add = Number((SABOTAGE_DEFAULTS.recharge_to - sb.balance).toFixed(2));
+      sb.balance = Number((sb.balance + add).toFixed(2));
+      sb.stats.recharged = Number(((sb.stats.recharged || 0) + add).toFixed(2));
+      log('sabotage_recharged', { added: add, total_recharged: sb.stats.recharged, note: 'quarantined dry book - keeps the losing experiment running' });
     }
-    const holdOk = holdRule.entryAllowed(position.expiration, Date.now());
-    if (!holdOk.ok) return;
+    const t = sabTried.get(position.market_id);
+    if (t && Date.now() - t < SAB_COOLDOWN_MS) return;         // refused every pass; buy it rarely
+    const closeTs = Date.parse(position.expiration);
+    if (!Number.isFinite(closeTs) || closeTs < Date.now() + 60000) return; // must still be open >=60s (no hold rule: this book wants fast settles)
     if (sb.positions.length >= SABOTAGE_DEFAULTS.max_concurrent) { sb.stats.skips++; return; }
-    if (sb.balance < 5) { if (!sb.paused_reason) { sb.paused_reason = 'balance below $5'; log('sabotage_paused', { balance: sb.balance }); } return; }
-    const price = isRefusal
-      ? Math.round(Number(position.entry_price) * 100) / 100     // buy the convicted side AT its own price
-      : Math.round((1 - position.entry_price) * 100) / 100;      // or the opposite side at the complement
+    const isRefusal = String(position.strategy || '').startsWith('refused');
+    // DESIGNED-LOSER SELECTION (2026-11-08 fix): a noise refusal at ~50c is a
+    // coin flip, not a loss. Every sabotage buy must be the MODEL-OVERPRICED
+    // side of the pair - price above fair - so EV is negative by construction:
+    //   candidate side overpriced (bid > fair)  -> buy the candidate at bid
+    //   candidate side cheap (bid <= fair)      -> buy the OPPOSITE at 1-bid
+    let side, price;
+    if (isRefusal) {
+      const fair = Number(position.fair);
+      const ownPx = Math.round(Number(position.entry_price) * 100) / 100;
+      if (Number.isFinite(fair) && fair > 0 && ownPx <= fair + 0.005) {
+        side = (position.side || 'NO') === 'YES' ? 'NO' : 'YES';
+        price = Math.round((1 - ownPx) * 100) / 100;
+      } else {
+        side = position.side || 'NO';
+        price = ownPx;
+      }
+    } else {
+      side = (position.side || 'NO') === 'YES' ? 'NO' : 'YES';
+      price = Math.round((1 - position.entry_price) * 100) / 100;
+    }
     if (!(price >= 0.01 && price <= 0.99)) return;
     const qty = Math.max(1, Math.floor(SABOTAGE_DEFAULTS.notional_dollars / price));
     const cost = Number((qty * price).toFixed(2));
     if (cost > sb.balance) return;
     sb.balance = Number((sb.balance - cost).toFixed(2));
-    const side = isRefusal ? (position.side || 'NO') : ((position.side || 'NO') === 'YES' ? 'NO' : 'YES');
+    sabTried.set(position.market_id, Date.now());
     sb.positions.push({
       market_id: position.market_id, side, price, qty, cost,
       close_time: position.expiration, strike: position.strike != null ? position.strike : null,

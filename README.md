@@ -107,9 +107,12 @@ say so. Config: `state.runtime.all_no.anti_model`.
 `state.sabotage` — a quarantined book that is DESIGNED to lose and measures
 the inversion hypothesis with real settlements:
 
-1. **Buys the refused side**: every candidate the vaccine (or the 15c edge
-   cap) convicts, the sabotage book buys AT the refused price — the exact
-   trade the gates exist to prevent (5-min per-ticker cooldown).
+1. **Buys the overpriced side of every refusal**: every candidate the engine
+   refuses — vaccine conviction, probability floor, price cap, lottery floor,
+   momentum veto, edge minimum, edge cap — the sabotage book buys the
+   MODEL-OVERPRICED side of that pair (price above fair), so EV is negative
+   by construction (2026-11-08 fix: noise refusals at ~50c were coin flips;
+   selection now structural). 3-min per-ticker cooldown.
 2. **Mirrors every engine entry**: every position the dry engine books
    (all_no, certainty, anti_model fades), the sabotage book takes the
    OPPOSITE side at the complement price.
@@ -122,7 +125,9 @@ zombie-close at +3h booked as a loss (this book tries to lose).
 `GET /api/inverse` shows both columns — sabotage P&L and the EXACT mirror
 (arithmetic opposite of every settled trade) — with a verdict at n>=50:
 if the mirror pays >2c/contract, inversion is real; if not, the numbers say
-so. $100 dry balance, $0.50/trade, max 10 concurrent.
+so. $100 dry balance, $0.50/trade, max 30 concurrent, auto-recharge below $10
+(it can never pause - total drain tracked in `stats.recharged`). No hold-rule:
+this book wants fast settles. Volume: every refused candidate, every pass.
 
 ## Hygiene law (2026-11-07)
 
