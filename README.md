@@ -65,6 +65,21 @@ node hold_rule.test.js   # hold-window rules
 node alpha_gate.test.js  # promotion gate
 ```
 
+## SHADOW 2.0 + trading-hours law (2026-11-08)
+
+- **Fast settle** (30s tick): when a shadow's window closes (ts+tau), Coinbase
+  spot truth settles it (`close >= strike => YES`, the detective's own-db rule).
+  Kalshi's later finalize cross-checks; conflicts log `shadow_settle_conflict`.
+- **Zombie sweep**: pendings closed >2h and unpriceable get `outcome=-1`
+  (abandoned sentinel — excluded from stats and the boot backfill). The ~318
+  Mirror pendings from before this law were the direct motivation.
+- **Scoreboard** `GET /api/shadow`: expectancy (cents/contract) per hour, lane,
+  price-band and side from settled rows — the promotion dossier (which hours,
+  lanes and zones actually pay; proof, not opinion).
+- **Hours law**: 21Z/23Z dry entries refused (detective: toxic cells); scan and
+  shadow evidence keeps flowing from every hour. Config
+  `state.runtime.trading_hours.blocked_utc` (empty = off).
+
 ## Hygiene law (2026-11-07)
 
 Session debris (one-off fix scripts, probe droppings, snapshot dumps) is

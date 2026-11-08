@@ -3081,6 +3081,48 @@ if (p === '/api/alpha') {
     return json(res, result, result.error ? 400 : 200);
   }
   
+  // --- SHADOW SCOREBOARD: what the free ledger has PROVEN, per cell --------
+  // Settled rows only (outcome 0/1; -1 = abandoned sentinel). Every cell is
+  // measured — no opinions. Cells with n>=20 are evidence-grade; expectancy
+  // in cents per contract. This is the promotion dossier for every lane.
+  if (p === '/api/shadow') {
+    let rows = [];
+    try { rows = await dbAll(`SELECT ts, market_id, strategy, source, side, asset, horizon, entry_price, outcome, pnl FROM calibration WHERE outcome IN (0,1) ORDER BY ts`); }
+    catch (e) { return json(res, { error: 'ledger read failed: ' + String(e.message || e) }, 500); }
+    const mk = () => ({ n: 0, wins: 0, pnl: 0 });
+    const add = (m, k, o, pnl) => { const c = m.get(k) || mk(); c.n++; c.wins += o; c.pnl += pnl; m.set(k, c); };
+    const byStrat = new Map(), byHour = new Map(), byBand = new Map(), bySide = new Map();
+    let tot = mk(), shadowN = 0, liveN = 0;
+    for (const r of rows) {
+      const o = Number(r.outcome), pnl = Number(r.pnl) || 0, px = Number(r.entry_price);
+      if (o !== 0 && o !== 1) continue;
+      if (String(r.source || 'shadow') === 'shadow') shadowN++; else liveN++;
+      add(byStrat, String(r.strategy || '?'), o, pnl);
+      add(byHour, new Date(r.ts).getUTCHours() + 'Z', o, pnl);
+      add(byBand, (Number.isFinite(px) ? (Math.floor(px / 0.05) * 0.05).toFixed(2) : '?') + ' ' + String(r.side || '?'), o, pnl);
+      add(bySide, String(r.side || '?'), o, pnl);
+      tot.n++; tot.wins += o; tot.pnl += pnl;
+    }
+    const rank = (m) => Array.from(m.entries()).map(([name, c]) => ({
+      name, n: c.n, win_rate: Number((c.wins / c.n).toFixed(3)), pnl: Number(c.pnl.toFixed(2)),
+      cents_per_contract: Number((100 * c.pnl / c.n).toFixed(2)),
+    })).sort((a, b) => b.cents_per_contract - a.cents_per_contract);
+    const hours = rank(byHour), strats = rank(byStrat), bands = rank(byBand), sides = rank(bySide);
+    return json(res, {
+      settled_rows: tot.n, shadow_rows: shadowN, live_rows: liveN,
+      total_pnl: Number(tot.pnl.toFixed(2)),
+      total_cents_per_contract: tot.n ? Number((100 * tot.pnl / tot.n).toFixed(2)) : null,
+      hour_utc: hours, by_strategy: strats, by_price_band_side: bands, by_side: sides,
+      evidence_cells_n20: {
+        hours: hours.filter(c => c.n >= 20).length,
+        strategies: strats.filter(c => c.n >= 20).length,
+        bands: bands.filter(c => c.n >= 20).length,
+      },
+      pending_shadows: (CALIB.snapshot() || {}).pending_shadows_n || 0,
+      note: 'cells with n>=20 are evidence-grade; cents_per_contract = expectancy; outcome=-1 (abandoned) excluded',
+    });
+  }
+
   if (p === '/api/no-lanes/exit' && method === 'POST') {
     // Close an ALL NO MARKETS position
     const b = await readBody(req);
@@ -3787,6 +3829,9 @@ async function runCertaintyPass() {
     ls.last_skip = 'no certainty candidate (' + scan.scanned + ' markets scanned)';
     return;
   }
+  // TRADING-HOURS LAW (2026-11-08): evidence above still records; only DRY
+  // ENTRIES are refused in toxic hours (detective: 21Z/23Z negative cells).
+  if (hourBlockedUtc()) { ls.skips++; ls.last_skip = 'trading-hours law: blocked UTC hour ' + new Date().getUTCHours() + 'Z'; return; }
   const busy = new Set(open.map(p => p.market_id));
   const tried = cfg._tried || (cfg._tried = {});
   for (const c of tradable) {
@@ -3817,6 +3862,76 @@ async function runCertaintyPass() {
     if (open.length + 1 >= cfg.max_concurrent) break;
   }
 }
+// ---------------------------------------------------------------------------
+// TRADING-HOURS LAW (2026-11-08) — detective own-db evidence: hours 21Z and
+// 23Z are toxic expectancy cells; 07Z/09Z the positive ones. Dry entries in
+// blocked hours are refused (shadows keep flowing, so the law itself stays
+// measurable). Config: state.runtime.trading_hours = { blocked_utc: [...] };
+// an empty array disables the law.
+function hourBlockedUtc() {
+  const th = (state.runtime && state.runtime.trading_hours) || {};
+  const arr = Array.isArray(th.blocked_utc) ? th.blocked_utc.map(Number).filter(Number.isFinite) : [21, 23];
+  return arr.includes(new Date().getUTCHours()) ? arr : null;
+}
+
+// ---------------------------------------------------------------------------
+// SHADOW FAST-SETTLE + ZOMBIE SWEEP (2026-11-08 — "make shadow smarter").
+// Old flow: a shadow waited for Kalshi to finalize AND for a later scan pass
+// to see the finalized market — minutes to hours of dead evidence (~318
+// Mirror pendings were sitting in exactly that trap). New flow: the moment a
+// shadow's window closes (entry ts + tau), Coinbase spot truth settles it
+// (close >= strike => YES — the same rule the detective's own_db uses).
+// Kalshi's later finalize becomes a live CROSS-CHECK (conflicts logged by
+// calibration.settleResult). Zombies (closed, unpriceable, never finalized)
+// are swept at 2h with the outcome=-1 sentinel — never resurrected by the
+// boot backfill (it selects outcome IS NULL).
+const SHADOW_ASSET_PRODUCT = { btc: 'BTC-USD', eth: 'ETH-USD', xrp: 'XRP-USD', hype: 'HYPE-USD' };
+function spotAtClose(product, tsSec) {
+  const s = spot[product];
+  if (!s || !Array.isArray(s.points) || !s.points.length) return null;
+  const pts = s.points;
+  let lo = 0, hi = pts.length - 1, best = null, bestD = Infinity;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    const d = Math.abs(pts[mid].t - tsSec);
+    if (d < bestD) { bestD = d; best = pts[mid]; }
+    if (pts[mid].t < tsSec) lo = mid + 1; else hi = mid - 1;
+  }
+  // The close is the LAST print at/just-before settlement; a print 90s+ away
+  // is a feed gap, not the close — refuse instead of guessing.
+  if (!best || bestD > 90) return null;
+  const p = Number(best.p);
+  return Number.isFinite(p) ? p : null;
+}
+function shadowFastSettle() {
+  if (!CALIB || typeof CALIB.pendingRows !== 'function') return;
+  const rows = CALIB.pendingRows();
+  const now = Date.now();
+  for (const row of rows) {
+    const tauSec = Number(row.tau_sec);
+    const ts = Date.parse(row.ts);
+    if (!Number.isFinite(ts) || !Number.isFinite(tauSec)) continue;
+    const closeTs = ts + tauSec * 1000;
+    if (!(closeTs > 0)) continue;
+    if (now < closeTs + 45000) continue;        // let the closing prints land
+    const product = SHADOW_ASSET_PRODUCT[row.asset];
+    if (product && row.strike != null && Number.isFinite(Number(row.strike))) {
+      const sp = spotAtClose(product, Math.floor(closeTs / 1000));
+      if (sp != null) {
+        const resultYes = sp >= Number(row.strike);
+        const n = CALIB.settleResult(row.market_id, resultYes, 'spot');
+        if (n > 0) log('shadow_spot_settled', { market_id: row.market_id, settled: n, strike: row.strike, spot_at_close: sp, result: resultYes ? 'yes' : 'no', via: product });
+        continue;
+      }
+    }
+    if (now > closeTs + 2 * 60 * 60 * 1000) {
+      const n = CALIB.abandon ? CALIB.abandon(row.market_id) : 0;
+      if (n > 0) log('shadow_zombie_swept', { market_id: row.market_id, closed_at: new Date(closeTs).toISOString() });
+    }
+  }
+}
+setInterval(() => { try { shadowFastSettle(); } catch (e) { } }, 30000);
+
 async function runAllNoEngine() {
   if (!state.no_lanes_enabled) return;
   const noLs = laneState('all_no_markets');
@@ -3840,6 +3955,9 @@ async function runAllNoEngine() {
   if (book.positions.length >= cfg.max_concurrent) { noLs.last_skip = 'max concurrent positions'; return; }
   
   for (const r of rows) {
+    // TRADING-HOURS LAW (2026-11-08): toxic-hour entries refused (detective
+    // own-db: 21Z/23Z negative cells). Scan/shadow evidence above continues.
+    if (hourBlockedUtc()) { noLs.skips++; noLs.last_skip = 'trading-hours law: blocked UTC hour ' + new Date().getUTCHours() + 'Z'; break; }
     if (r.edge < cfg.min_edge) continue;
     // THE VACCINE, second door: rows only exist if the calibration gate
     // passed at scan time, but a market can finalize between scan and here —
