@@ -2448,7 +2448,7 @@ async function noBook() {
         // lives in CODE, not runtime config — the Oct 26 config surgery that
         // raised max_edge to 0.30 is exactly how 1,136 zero-win entries got
         // made. No runtime override may ever raise it.
-        if (e > MAX_CLAIMED_EDGE) { sk('edge_above_code_cap'); antiBook(q, side, bid, fairSide, null, perSec || null, tau, sp); return; }
+        if (e > MAX_CLAIMED_EDGE) { sk('edge_above_code_cap'); antiBook(q, side, bid, fairSide, null, perSec || null, tau, sp); sabotageBook({ strategy: 'refused:edge-cap', market_id: q.ticker, side, entry_price: bid, expiration: q.close_time, strike: q.strike }); return; }
         // THE VACCINE: the claimed fair is a hypothesis, not a probability.
         // The bucket's REALIZED record (with market price as prior) is the
         // only probability we trade against. Blocked candidates become free
@@ -2468,6 +2468,10 @@ async function noBook() {
           // refusal the ledger itself says was right to refuse — the anti
           // side is the candidate worth measuring (see antiBook).
           antiBook(q, side, bid, fairSide, cal, perSec || null, tau, sp);
+          // SABOTAGE BOOK (operator order 2026-11-08): and the losing book
+          // BUYS the refused side itself - the exact trade the vaccine exists
+          // to prevent. Designed to lose, quarantined, measured.
+          sabotageBook({ strategy: 'refused:vaccine', market_id: q.ticker, side, entry_price: bid, expiration: q.close_time, strike: q.strike });
           return;
         }
         const kelly = Math.max(0, e / (1 - bid));
@@ -2639,6 +2643,98 @@ function antiBook(q, side, bid, fairSide, calIn, perSec, tau, sp) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// THE SABOTAGE BOOK (operator order 2026-11-08: "change the code to lose
+// money in dry. obey."). Deliberately money-losing trades, fully QUARANTINED.
+// RULE: every position the dry engine books, this book takes the OPPOSITE
+// side at the complement price. That mirrors normal entries, certainty
+// entries, and anti_model fades - whose mirror is the convicted loser side
+// itself. This book NEVER touches the calibration ledger, the shadow system,
+// or the main dry book: engineered losers must not poison the learning
+// instrument that finds the winners (the fade lane included).
+// /api/inverse shows BOTH columns - what the losing code did, and the exact
+// opposite - so the inversion hypothesis is measured with numbers, not argued.
+// ---------------------------------------------------------------------------
+const SABOTAGE_DEFAULTS = { enabled: true, balance_start: 100, notional_dollars: 0.50, max_concurrent: 10 };
+const sabTried = new Map(); // ticker -> ts (5-min cooldown on refusal buys)
+function sabotageState() {
+  if (!state.sabotage) state.sabotage = {
+    balance: SABOTAGE_DEFAULTS.balance_start, positions: [], history: [],
+    stats: { opened: 0, settled: 0, wins: 0, pnl: 0, mirror_pnl: 0, skips: 0 }, paused_reason: '',
+  };
+  return state.sabotage;
+}
+function sabotageBook(position) {
+  try {
+    if (!SABOTAGE_DEFAULTS.enabled) return;
+    const sb = sabotageState();
+    if (position.strategy === 'sabotage') return;              // never mirror itself
+    const isRefusal = String(position.strategy || '').startsWith('refused');
+    if (isRefusal) {
+      const t = sabTried.get(position.market_id);
+      if (t && Date.now() - t < 5 * 60 * 1000) return;         // refused every pass; buy it rarely
+      sabTried.set(position.market_id, Date.now());
+    }
+    const holdOk = holdRule.entryAllowed(position.expiration, Date.now());
+    if (!holdOk.ok) return;
+    if (sb.positions.length >= SABOTAGE_DEFAULTS.max_concurrent) { sb.stats.skips++; return; }
+    if (sb.balance < 5) { if (!sb.paused_reason) { sb.paused_reason = 'balance below $5'; log('sabotage_paused', { balance: sb.balance }); } return; }
+    const price = isRefusal
+      ? Math.round(Number(position.entry_price) * 100) / 100     // buy the convicted side AT its own price
+      : Math.round((1 - position.entry_price) * 100) / 100;      // or the opposite side at the complement
+    if (!(price >= 0.01 && price <= 0.99)) return;
+    const qty = Math.max(1, Math.floor(SABOTAGE_DEFAULTS.notional_dollars / price));
+    const cost = Number((qty * price).toFixed(2));
+    if (cost > sb.balance) return;
+    sb.balance = Number((sb.balance - cost).toFixed(2));
+    const side = isRefusal ? (position.side || 'NO') : ((position.side || 'NO') === 'YES' ? 'NO' : 'YES');
+    sb.positions.push({
+      market_id: position.market_id, side, price, qty, cost,
+      close_time: position.expiration, strike: position.strike != null ? position.strike : null,
+      opened_at: new Date().toISOString(),
+      source: isRefusal ? 'bought-the-refusal' : 'opposite-of:' + (position.strategy || '?'),
+    });
+    sb.stats.opened++;
+    log('sabotage_entry', { market_id: position.market_id, side, px: price, qty, closes: position.expiration, faded_engine_choice: position.side + '@' + position.entry_price, source: isRefusal ? 'the side the vaccine refused' : 'opposite of the engine choice', note: 'designed to lose' });
+  } catch (e) { try { log('sabotage_error', { error: String(e && e.message || e).slice(0, 200) }); } catch (e2) { } }
+}
+function sabotageSettle() {
+  try {
+    const sb = sabotageState();
+    if (!sb.positions.length) return;
+    const now = Date.now();
+    const assetMap = { KXBTC: 'BTC-USD', KXETH: 'ETH-USD', KXXRP: 'XRP-USD', KXHYPE: 'HYPE-USD' };
+    for (const p of Array.from(sb.positions)) {
+      const closeTs = Date.parse(p.close_time);
+      if (!Number.isFinite(closeTs)) continue;
+      if (now < closeTs + 45000) continue;
+      let product = null;
+      for (const [pre, prod] of Object.entries(assetMap)) { if (String(p.market_id).startsWith(pre)) { product = prod; break; } }
+      let outcome = null, via = null;
+      if (product && p.strike != null) {
+        const sp = spotAtClose(product, Math.floor(closeTs / 1000));
+        if (sp != null) { outcome = (p.side === 'YES') === (sp >= p.strike); via = 'spot'; }
+      }
+      if (outcome === null && now > closeTs + 3 * 60 * 60 * 1000) {
+        outcome = false; via = 'zombie-close'; // this book tries to lose: a dead trade's cost is booked lost
+      }
+      if (outcome === null) continue;
+      const pnl = Number(((outcome ? (1 - p.price) : -p.price) * p.qty).toFixed(4));
+      const mirrorPnl = Number((-pnl).toFixed(4));
+      sb.balance = Number((sb.balance + (outcome ? p.qty : 0)).toFixed(2));
+      sb.positions.splice(sb.positions.indexOf(p), 1);
+      sb.history.push({ at: new Date().toISOString(), market_id: p.market_id, side: p.side, px: p.price, qty: p.qty, outcome: outcome ? 'WIN' : 'LOSS', pnl, mirror_pnl: mirrorPnl, via });
+      if (sb.history.length > 2000) sb.history.splice(0, sb.history.length - 2000);
+      if (outcome) sb.stats.wins++;
+      sb.stats.settled++;
+      sb.stats.pnl = Number((sb.stats.pnl + pnl).toFixed(4));
+      sb.stats.mirror_pnl = Number((sb.stats.mirror_pnl + mirrorPnl).toFixed(4));
+      log('sabotage_settled', { market_id: p.market_id, side: p.side, px: p.price, outcome: outcome ? 'WIN' : 'LOSS', pnl, mirror_pnl: mirrorPnl, via, balance: sb.balance });
+    }
+  } catch (e) { try { log('sabotage_error', { error: String(e && e.message || e).slice(0, 200) }); } catch (e2) { } }
+}
+setInterval(() => { try { sabotageSettle(); } catch (e) { } }, 60000);
+
 function createAllNoEntry(market_id, entry_price, quantity, fair_at_entry, edge, kelly, stop_loss, take_profit, confidence, expiration, extra) {
   // OPERATOR RULE (2026-11-06): a trade must close within 30 days of opening.
   // HOLD RULE: fail-closed - missing/invalid close_time blocks the entry
@@ -2727,6 +2823,9 @@ function createAllNoEntry(market_id, entry_price, quantity, fair_at_entry, edge,
   // path created it (engine, manual, FILLSIM fill, harvester excluded).
   bumpMarketEntry(position.market_id);
   save();
+  // SABOTAGE BOOK (operator order 2026-11-08): every dry booking the engine
+  // makes, the quarantined losing book mirrors to the OPPOSITE side.
+  if (x.sabotage !== false) sabotageBook(position);
 
   return { ok: true, position, balance: book.balance };
 }
@@ -3211,6 +3310,30 @@ if (p === '/api/alpha') {
       },
       pending_shadows: (CALIB.snapshot() || {}).pending_shadows_n || 0,
       note: 'cells with n>=20 are evidence-grade; cents_per_contract = expectancy; outcome=-1 (abandoned) excluded',
+    });
+  }
+
+  // --- THE INVERSE SCOREBOARD: the losing book vs its exact mirror --------
+  // Operator order 2026-11-08: "do worse - code that loses money in dry."
+  // Column 1: the sabotage book (opposite of every engine decision, designed
+  // to lose). Column 2: its EXACT mirror (the arithmetic opposite of every
+  // settled sabotage trade). If inversion paid, column 2 prints. Fees/spread
+  // are the difference between theory and money - watch both columns.
+  if (p === '/api/inverse') {
+    const sb = sabotageState();
+    const settled = sb.stats.settled;
+    const cpc = settled ? Number((100 * sb.stats.pnl / settled).toFixed(2)) : null;
+    const mcpc = settled ? Number((100 * sb.stats.mirror_pnl / settled).toFixed(2)) : null;
+    let verdict = 'collecting evidence (' + settled + '/' + 50 + ' settled - no verdict yet)';
+    if (settled >= 50) verdict = mcpc != null && mcpc > 2
+      ? 'INVERSION EDGE REAL: mirror pays ' + mcpc + 'c/contract after this book\'s costs'
+      : 'INVERSION DOES NOT PAY: mirror at ' + mcpc + 'c/contract - the losing book\'s mirror is not free money';
+    return json(res, {
+      sabotage: { opened: sb.stats.opened, settled, wins: sb.stats.wins, win_rate: settled ? Number((sb.stats.wins / settled).toFixed(3)) : null, pnl: sb.stats.pnl, cents_per_contract: cpc, balance: sb.balance, open_positions: sb.positions.length },
+      mirror: { pnl: sb.stats.mirror_pnl, cents_per_contract: mcpc, note: 'arithmetic opposite of every settled sabotage trade' },
+      verdict,
+      last_trades: sb.history.slice(-20).reverse(),
+      paused: sb.paused_reason || null,
     });
   }
 
