@@ -209,7 +209,7 @@ while ($true) {
       $vcol = if ($warm.Count -eq 0) { 'DarkYellow' } elseif ($over.Count -gt $okBk.Count) { 'Red' } else { 'Green' }
       $wtxt = 'no warm buckets (n>=20) yet'
       if ($worst) { $wtxt = ("worst {0}: model {1} real {2} (n={3})" -f $worst.bucket, [Math]::Round([double]$worst.center,2), [Math]::Round([double]$worst.realized,2), $worst.n) }
-      Line $vcol ("VACCINE {0} warm buckets | {1} overstated / {2} ok | {3} | shadows {4}" -f $warm.Count, $over.Count, $okBk.Count, $wtxt, $(if ($null -ne $cal.pending_shadows_n) { $cal.pending_shadows_n } elseif ($null -ne $cal.pending_shadows -and $cal.pending_shadows -isnot [array]) { $cal.pending_shadows } else { 0 }))
+      Line $vcol ("VACCINE {0} warm buckets | {1} overstated / {2} ok | {3} | shadows {4} pending" -f $warm.Count, $over.Count, $okBk.Count, $wtxt, $(if ($null -ne $cal.pending_shadows_n) { $cal.pending_shadows_n } elseif ($null -ne $cal.pending_shadows -and $cal.pending_shadows -isnot [array]) { $cal.pending_shadows } else { 0 }))
     }
     # THE HARVESTER, on the tape: mass maker-order lane stats. EV/contract goes
     # Green once settled fills prove it positive, Red once negative.
@@ -218,6 +218,7 @@ while ($true) {
       $ev = $hv.stats.ev_per_contract
       $evTxt = '?'
       if ($null -ne $ev) { $evTxt = [Math]::Round([double]$ev, 3) }
+      elseif ($hv.stats.settled -eq 0) { $evTxt = 'n/a (0 settled)' }   # honest: nothing measured yet, not unknown
       $hcol = if ($null -eq $ev) { 'DarkYellow' } elseif ([double]$ev -gt 0) { 'Green' } else { 'Red' }
       Line $hcol ("HARVEST {0} open | bids {1} filled {2} settled {3} wins {4} | EV/contract {5}" -f $hv.open_positions, $hv.stats.intents, $hv.stats.filled, $hv.stats.settled, $hv.stats.wins, $evTxt)
     }

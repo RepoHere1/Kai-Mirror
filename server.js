@@ -4247,18 +4247,29 @@ setInterval(() => { try { shadowFastSettle(); } catch (e) { } }, 30000);
 async function runAllNoEngine() {
   if (!state.no_lanes_enabled) return;
   const noLs = laneState('all_no_markets');
-  if (!noLs || !noLs.running) return;
-  noLs.heartbeat = new Date().toISOString(); // scanner-alive truth every pass
-  laneState('anti_model').heartbeat = noLs.heartbeat; // fade lane rides the same scan
+  // HARVESTER INDEPENDENCE (operator order 2026-11-08): the harvester is a
+  // quarantined paper book that RIDES this scan — it is not the all_no lane.
+  // When the maker-kill sweep (or the operator) stops all_no, the scan must
+  // still feed the harvester and the shadow grid; "bids 0 forever" was the
+  // silent failure mode (tape: HARVEST ... bids 0 ... EV/contract ?).
+  // all_no ENTRIES below still obey the lane's own switch.
+  const harvOn = !!(state.harvester && state.harvester.enabled !== false);
+  const laneOn = !!(noLs && noLs.running);
+  if (!laneOn && !harvOn) return;
+  if (laneOn) {
+    noLs.heartbeat = new Date().toISOString(); // scanner-alive truth every pass
+    laneState('anti_model').heartbeat = noLs.heartbeat; // fade lane rides the same scan
+  }
   
   // Operator runtime config wins over code defaults.
   const cfg = Object.assign({}, ALL_NO_CONFIG, state.runtime.all_no || {});
   
   const rows = await noBook();
-  if (!rows.length) noLs.last_skip = 'scan pass: no candidates met the NO gates';
+  if (!rows.length && noLs && laneOn) noLs.last_skip = 'scan pass: no candidates met the NO gates';
   // THE HARVESTER rides the same scan: resting maker bids wherever the
-  // empirical ledger pays >= 8c edge with n>=50 proof. Paper only.
-  try { HARVEST.run(rows); } catch (e) { }
+  // empirical ledger pays (>= 6c edge, n>=50 proof). Paper only.
+  try { if (harvOn) HARVEST.run(rows); } catch (e) { }
+  if (!laneOn) return; // all_no entries obey their own lane switch; evidence already rode
   const book = state.all_no[state.mode];
   if (!book || book.balance < 5) { noLs.last_skip = 'book balance below $5 floor'; return; }
   
