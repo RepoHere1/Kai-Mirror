@@ -137,3 +137,24 @@ Session debris (one-off fix scripts, probe droppings, snapshot dumps) is
 never committed — `.gitignore` enforces the patterns. Git history keeps
 everything removed in the 2026-11-07 purge if archaeology is ever needed.
 The 190 losing trades and 136 calibration rows are DATA LAW: never delete.
+
+## 2026-11-08 operator order: raise win rate, trade much more
+
+Evidence-based, from the dry book's own ledgers:
+
+1. **Vaccine on EVERY lane**: per-asset lanes used to trade the brain's claimed
+   fair alone. Now every entry requires the calibration-adjusted probability to
+   beat the bid by 3c+ (clears fees). Refused candidates still shadow-open so
+   buckets keep learning. Same law all_no and the harvester already obeyed.
+2. **Fair ceiling 0.85 (code law)**: entry-fair 0.85+ is the -\.61 hole
+   (n=1983). The 0.65-0.85 window is the profitable zone (70-75% win).
+3. **Taker fallback**: when spread <= 2c and the vaccine-adjusted edge clears
+   5c AFTER paying the ask (inside the price band), take it now instead of
+   resting a bid that expires unfilled.
+4. **Volume valves**: per-lane concurrent 1 -> 3 (per-market unique), book cap
+   10 -> 24, exposure 40% -> 60%, loss cooldown 120s -> 30s, harvester 8 -> 16
+   positions at 6c edge (was 8c).
+
+Unchanged: quarantine (sabotage never touches calibration or main book),
+order cap \.50/contract, anti-stack/cluster/lifetime market caps, dead stops.
+

@@ -1702,7 +1702,7 @@ function closeDryPosition(pos, exitPrice, reason, result) {
   // Update lane stats
   ls.trades++;
   if (pnl > 0) ls.wins++; else {
-  ls.losses++; ls.loss_cooldown_until = Date.now() + (state.runtime.loss_cooldown_sec || 600) * 1000;
+  ls.losses++; ls.loss_cooldown_until = Date.now() + (state.runtime.loss_cooldown_sec || 30) * 1000;
   if (pnl < 0 && Math.abs(pnl) >= 0.25 * (state.dry.starting_balance || 303)) {
     state.clip_state = state.clip_state || { base: 3, max: 25, ratchet_until: 0 };
     state.clip_state.ratchet_until = Date.now() + 30 * 60 * 1000;
@@ -1917,8 +1917,14 @@ async function engineTick() {
     const cooldown = Number(cooldownSec) * 1000;
     if (lastEntry < cooldown) { ls.skips++; ls.last_skip = 'cooldown ' + Math.ceil((cooldown - lastEntry) / 1000) + 's'; continue; }
 
-    const held = state.dry.positions.filter(p => p.strategy === lane.name).length;
-    if (held >= 1) { ls.skips++; ls.last_skip = 'already holding'; continue; }
+    // LANE CONCURRENCY (operator order 2026-11-08: "make dry trade much more"):
+    // was held>=1 — one position per lane starved the book. Now per-market
+    // uniqueness + a per-lane cap (lc.max_concurrent, default 3). The global
+    // anti-stack (2/market), cluster (2/round) and lifetime caps still bind.
+    const laneHeld = state.dry.positions.filter(p => p.strategy === lane.name);
+    if (laneHeld.some(p => p.market_id === q.ticker)) { ls.skips++; ls.last_skip = 'already in this market'; continue; }
+    const laneCap = Number(lc.max_concurrent) > 0 ? Number(lc.max_concurrent) : 3;
+    if (laneHeld.length >= laneCap) { ls.skips++; ls.last_skip = 'lane at max concurrent (' + laneCap + ')'; continue; }
 
     // (max-hold ENTRY gate removed 2026-11-06: it refused every new entry once the
     // last entry was older than 5 minutes, which starved the lanes. Hold-time exits
@@ -1926,11 +1932,34 @@ async function engineTick() {
 
     // REAL model fair value for the chosen side (drives fair_at_entry records).
     const fair = result.fair != null ? result.fair : price;
+    // THE VACCINE, EVERY LANE (operator order 2026-11-08: raise win rate): the
+    // per-asset lanes traded on the brain's claimed fair alone — the exact lie
+    // the vaccine was built to catch (btc|15m|NO claimed 0.48, realized 0.35,
+    // n=51). Entry now requires adjusted − bid >= 3c (clears the ~1.7c fee at
+    // these prices). Refused candidates become free shadow rows so their
+    // buckets keep learning. all_no and the harvester already obey this law.
+    const cal = CALIB.gate({ ticker: q.ticker, side, strategy: lane.name, claimed: fair, price, minEdge: 0.03 });
+    if (!cal.ok) {
+      ls.skips++; ls.last_skip = 'calib gate: ' + (cal.reason || 'refused');
+      try { CALIB.shadowOpen({ ticker: q.ticker, side, strategy: lane.name, claimed: fair, price, gate: cal }); } catch (e) { }
+      continue;
+    }
     // OPERATOR_LAW: if the operator stopped this lane mid-tick, place NO order.
     // Enforce: operator's last button push is absolute law.
     OPERATOR_LAW.enforce('engineTick mid-tick check', { lane: lane.name, running: ls.running });
     if (!ls.running) { ls.skips++; ls.last_skip = 'operator stop (mid-tick)'; continue; }
     if (makerLaneMode(lane, lc)) {
+      // TAKER FALLBACK (operator order 2026-11-08): maker-only lets fat edges
+      // rest until they expire (the sim_unfilled pile). When the book is thin
+      // (spread <= 2c) and the vaccine-adjusted edge still clears 5c AFTER
+      // paying the ask — and the ask stays inside the evidence price band —
+      // take the liquidity now instead of resting behind it.
+      const askPx = side === 'YES' ? q.yes_ask : q.no_ask;
+      if (askPx != null && askPx > 0 && askPx < maxPrice && (askPx - price) <= 0.02
+          && cal.adjusted != null && (cal.adjusted - askPx) >= 0.05) {
+        const openedT = await openDryPosition(lane, q, side, askPx, fair, cal.adjusted - askPx, perSec);
+        if (openedT) { ls.last_entry_at = Date.now(); ls.pending_edge = null; continue; }
+      }
       // MAKER-EDGE: never lift the ask. Rest a bid at our own level; FILLSIM books
       // the position only if a REAL print goes through that bid inside the TTL.
       if (laneMakerPending(lane.name)) { ls.skips++; ls.last_skip = 'maker bid already resting'; continue; }
@@ -2418,7 +2447,7 @@ async function noBook() {
       // YES-TWIN: the identical thesis mirrored to the other side of the book -
       // a cheap high-probability YES is the same trade as a cheap
       // high-probability NO. One scan, both sides, per-side caps.
-      const anCfg = { min_fair: 0.65, max_no_price: 0.35, max_yes_price: 0.35, min_edge: 0.02, allow_yes: true, ...(state.runtime.all_no || {}) };
+      const anCfg = { min_fair: 0.65, max_fair: 0.85, max_no_price: 0.35, max_yes_price: 0.35, min_edge: 0.02, allow_yes: true, ...(state.runtime.all_no || {}) };
       const mkRow = (side, fairSide, bid, askPx) => {
         if (state.safe_mode) { sk('safe_mode'); return; }   // FAIL CLOSED
         const cap = side === 'YES' ? anCfg.max_yes_price : anCfg.max_no_price;
@@ -2429,9 +2458,11 @@ async function noBook() {
         // more probability margin there.
         const fairFloor = asset === 'HYPE-USD' ? Math.max(anCfg.min_fair, 0.58) : anCfg.min_fair;
         if (fairSide < fairFloor) { sk('fair_below_floor'); sabotageBook({ strategy: 'refused:fair-floor', market_id: q.ticker, side, entry_price: bid, fair: fairSide, expiration: q.close_time, strike: q.strike }); return; }                   // probability floor
-        // CONFIDENCE CEILING (2026-11-03 calibration): the model's loudest claims
-        // were its worst - LIVE fair .80+ won 50%, .55-.60 won 0/8, .62-.75 won 72.5%.
-        // max_fair unset = 9.99 = ceiling disabled, so the lab keeps sampling this zone.
+        // CONFIDENCE CEILING (ledger law 2026-11-08): entry-fair 0.85+ is the
+        // -$198.61 hole (n=1983). The ceiling is now 0.85 in CODE — the lab
+        // sampled that zone long enough to convict it. Runtime may LOWER it,
+        // never raise it (runtime spread merges after the literal only for
+        // fields it defines; this literal pins the default).
         if (fairSide > (anCfg.max_fair != null ? anCfg.max_fair : 9.99)) { sk('fair_above_ceiling'); sabotageBook({ strategy: 'refused:fair-ceiling', market_id: q.ticker, side, entry_price: bid, fair: fairSide, expiration: q.close_time, strike: q.strike }); return; }
         if (bid > cap) { sk('bid_above_cap'); sabotageBook({ strategy: 'refused:price-cap', market_id: q.ticker, side, entry_price: bid, fair: fairSide, expiration: q.close_time, strike: q.strike }); return; }                              // price cap (cheap only)
         if (bid < (anCfg.min_entry_price || 0)) { sk('bid_below_min_entry'); sabotageBook({ strategy: 'refused:lottery-floor', market_id: q.ticker, side, entry_price: bid, fair: fairSide, expiration: q.close_time, strike: q.strike }); return; }     // no sub-floor lottery tickets
@@ -3873,8 +3904,8 @@ process.on('unhandledRejection', (reason, promise) => {
 // Runtime config for ALL NO engine and lane improvements
 const ALL_NO_CONFIG = {
   scan_interval_ms: 10000,        // scan cadence
-  max_concurrent: 10,             // more concurrent positions
-  max_exposure_pct: 0.4,          // 40% max exposure (paper)
+  max_concurrent: 24,             // book-wide cap (was 10 - it bound the WHOLE dry book, not just this lane; operator order 2026-11-08)
+  max_exposure_pct: 0.6,          // 60% max exposure (paper) - was 0.4
   kelly_cap: 0.25,                // 25% Kelly cap
   min_edge: 0.004,                // 0.4% minimum edge
   min_vol: 0.0001,

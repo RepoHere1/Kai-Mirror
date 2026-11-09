@@ -31,12 +31,12 @@
 // until its own settled record says it should exist.
 // ===========================================================================
 
-const HARVEST_MIN_EDGE = 0.08;   // empirical posterior must beat price by 8c
+const HARVEST_MIN_EDGE = 0.06;   // empirical posterior must beat price by 6c (was 8c; proven buckets, more fills - operator order 2026-11-08)
 const HARVEST_MIN_N = 50;        // bucket must have 50+ settled observations
 const HARVEST_MAX_SPREAD = 0.06; // thin books only
 const HARVEST_TTL_SEC = 90;      // resting order lifetime — then cancel
 const MAX_PER_MARKET = 2;        // resting/filled positions per market
-const MAX_ACTIVE = 8;            // total open paper positions
+const MAX_ACTIVE = 16;           // total open paper positions (was 8)
 
 function create(deps) {
   const CALIB = deps.CALIB;
