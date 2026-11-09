@@ -102,35 +102,6 @@ entry is double-booked: a dry position (real settlement P&L) AND a shadow row
 rows. If the fade prints, the operator was right; if fees eat it, the numbers
 say so. Config: `state.runtime.all_no.anti_model`.
 
-## SABOTAGE BOOK (operator order 2026-11-08: "code that loses money in dry")
-
-`state.sabotage` — a quarantined book that is DESIGNED to lose and measures
-the inversion hypothesis with real settlements:
-
-1. **Buys the overpriced side of every refusal**: every candidate the engine
-   refuses — vaccine conviction, probability floor, price cap, lottery floor,
-   momentum veto, edge minimum, edge cap — the sabotage book buys the
-   MODEL-OVERPRICED side of that pair (price above fair), so EV is negative
-   by construction (2026-11-08 fix: noise refusals at ~50c were coin flips;
-   selection now structural). 3-min per-ticker cooldown.
-2. **Mirrors every engine entry**: every position the dry engine books
-   (all_no, certainty, anti_model fades), the sabotage book takes the
-   OPPOSITE side at the complement price.
-
-QUARANTINE IS ABSOLUTE: it never writes to the calibration ledger, the
-shadow system, or the main dry book — engineered losers must not poison the
-learning instrument. Settlement: Coinbase spot at close (`close >= strike`),
-zombie-close at +3h booked as a loss (this book tries to lose).
-
-`GET /api/inverse` shows both columns — sabotage P&L and the EXACT mirror
-(arithmetic opposite of every settled trade) — with a verdict at n>=50:
-if the mirror pays >2c/contract, inversion is real; if not, the numbers say
-so. $100 dry balance, $0.50/trade, max 60 concurrent, auto-recharge below $10
-(it can never pause - total drain tracked in `stats.recharged`). No hold-rule:
-this book wants fast settles. Volume: every refused candidate (all 11 gate
-sites, spread refusals included - paying the spread is a designed loss), every
-pass, 90s per-ticker cooldown.
-
 ## Hygiene law (2026-11-07)
 
 Session debris (one-off fix scripts, probe droppings, snapshot dumps) is
