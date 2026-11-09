@@ -125,9 +125,11 @@ zombie-close at +3h booked as a loss (this book tries to lose).
 `GET /api/inverse` shows both columns — sabotage P&L and the EXACT mirror
 (arithmetic opposite of every settled trade) — with a verdict at n>=50:
 if the mirror pays >2c/contract, inversion is real; if not, the numbers say
-so. $100 dry balance, $0.50/trade, max 30 concurrent, auto-recharge below $10
+so. $100 dry balance, $0.50/trade, max 60 concurrent, auto-recharge below $10
 (it can never pause - total drain tracked in `stats.recharged`). No hold-rule:
-this book wants fast settles. Volume: every refused candidate, every pass.
+this book wants fast settles. Volume: every refused candidate (all 11 gate
+sites, spread refusals included - paying the spread is a designed loss), every
+pass, 90s per-ticker cooldown.
 
 ## Hygiene law (2026-11-07)
 
