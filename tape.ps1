@@ -1,14 +1,14 @@
-# KAI TAPE (DRY book) - event-driven terminal feed. The live screen is for
-# TRADES ONLY (ENTER/CLOSE/LANE CLOSE/BAL) plus operational truth (SERVER
-# DOWN/SLOW/RESTARTED). Everything that is not a trade - shadow events,
-# vaccine, harvester, detective, backtest, pulse - buffers and prints ONCE
-# PER HOUR as one block at the local top-of-the-hour (first block at startup).
+# KAI TAPE (DRY book) - event-driven terminal feed. The live screen is
+# chronological TRADES of every kind - book ENTER/CLOSE, LANE CLOSE, BAL,
+# SHADOW opens/settles - plus operational truth (SERVER DOWN/SLOW/RESTARTED).
+# The periodic status lines (VACCINE/HARVEST/DETECTIVE/BACKTEST/PULSE) bunch
+# into ONE HOURLY REPORT block at the local top-of-the-hour (first at startup).
 # Run:  .\tape.ps1
 $ErrorActionPreference = 'SilentlyContinue'
 $ProgressPreference = 'SilentlyContinue'   # kills the blue "Reading web response" popup
 $Cfg = @{ Tag = 'DRY'; Port = 8787 }
 
-Write-Host "==== KAI TAPE - DRY book (trades live + hourly report, Ctrl+C to stop) ====" -ForegroundColor White
+Write-Host "==== KAI TAPE - DRY book (trades & shadows live + hourly status, Ctrl+C to stop) ====" -ForegroundColor White
 
 $knownClosed = @{}   # trade id -> $true
 $knownOpen = @{}     # position id -> $true
@@ -22,11 +22,11 @@ $knownShadow = @{}   # shadow event key -> seen
 $shadowSeeded = $false
 $lastShadowPoll = 0
 
-# HOURLY REPORT (operator order 2026-11-08): everything that is not an actual
-# trade buffers here during the hour and prints ONCE, together, at the local
-# top-of-the-hour. The live screen stays chronological trades + server truth.
+# HOURLY STATUS REPORT (operator order 2026-11-08, refined): shadow trades are
+# TRADES - they print live. Only the periodic status lines (VACCINE/HARVEST/
+# DETECTIVE/BACKTEST/PULSE) buffer here and print ONCE, together, at the local
+# top-of-the-hour (first block at startup).
 $hourlyBuffer = [System.Collections.Generic.List[object]]::new()
-$shadowTally = @{ open = 0; win = 0; loss = 0; swept = 0 }
 $lastHourReported = -1
 function HourLine([string]$color, [string]$text) {
   $script:hourlyBuffer.Add([pscustomobject]@{ color = $color; text = $text })
@@ -171,20 +171,16 @@ while ($true) {
         $knownShadow[$sk] = $true
         if (-not $shadowSeeded) { continue }
         if ($e.kind -eq 'SHADOW_OPEN') {
-          $script:shadowTally.open++
-          HourLine 'DarkMagenta' ("SHADOW OPEN {0} {1} @{2} claimed={3} adj={4} [{5}]" -f $e.market_id, $e.side, $e.price, $e.claimed, $e.adjusted, $e.strategy)
+          Line 'DarkMagenta' ("SHADOW OPEN {0} {1} @{2} claimed={3} adj={4} [{5}]" -f $e.market_id, $e.side, $e.price, $e.claimed, $e.adjusted, $e.strategy)
         } else {
           # OPERATOR SPEC (2026-11-07): a settled shadow keeps its full text, but
           # the color IS the verdict - WIN prints bright yellow, LOSS prints white.
           # A settle with no outcome/pnl is a sweep (market closed, no recorded
           # result) - it gets real labels, never blank fields.
-          if ($e.outcome -eq 'WIN') { $script:shadowTally.win++ }
-          elseif ($e.outcome -eq 'LOSS') { $script:shadowTally.loss++ }
-          else { $script:shadowTally.swept++ }
           $outTxt = if ($e.outcome) { $e.outcome } else { 'SWEPT' }
           $pnlTxt = if ($null -ne $e.pnl) { $e.pnl } else { 'n/a' }
           $scol = if ($e.outcome -eq 'WIN') { 'Yellow' } else { 'White' }
-          HourLine $scol ("SHADOW {0} {1} {2} @{3} pnl={4} [{5}]" -f $outTxt, $e.market_id, $e.side, $e.price, $pnlTxt, $e.strategy)
+          Line $scol ("SHADOW {0} {1} {2} @{3} pnl={4} [{5}]" -f $outTxt, $e.market_id, $e.side, $e.price, $pnlTxt, $e.strategy)
         }
       }
     }
@@ -274,14 +270,12 @@ while ($true) {
     }
     HourLine 'DarkCyan' ("PULSE alive | bal `${0} | all_no `${1} (n={2}) | lanes `${3} (n={4}) | TOTAL `${5} | lanes {6} on | uptime {7}m | boots {8}" -f (BalTxt $lastBal), (BalTxt $lastPnl), ($(if ($nb) { $nb.book.entries } else { '?' })), (BalTxt $lastLanePnl), $lastLaneCount, $totPnl, $lanesOn, [int]($lastUptime/60), $boots)
 
-    # ---- FLUSH: one block, once per hour - tally, then buffered shadow
-    # events (oldest first), then the status lines just generated above. ----
-    Line 'White' ("================ HOURLY REPORT {0}:00 | shadows buffered: {1} ================" -f (Get-Date -Format 'HH'), ($script:shadowTally.open + $script:shadowTally.win + $script:shadowTally.loss + $script:shadowTally.swept))
-    Line 'DarkMagenta' ("SHADOWS this hour: {0} opened / {1} wins / {2} losses / {3} swept" -f $script:shadowTally.open, $script:shadowTally.win, $script:shadowTally.loss, $script:shadowTally.swept)
+    # ---- FLUSH: one status block, once per hour - trades and shadow trades
+    # printed above are live, chronological; only these status lines bunch. ----
+    Line 'White' ("================ HOURLY REPORT {0}:00 ================" -f (Get-Date -Format 'HH'))
     foreach ($bl in $script:hourlyBuffer) { Line $bl.color $bl.text }
     Line 'White' ("================ end hourly report ================")
     $script:hourlyBuffer.Clear()
-    $script:shadowTally = @{ open = 0; win = 0; loss = 0; swept = 0 }
   }
 
   Start-Sleep -Seconds 5
