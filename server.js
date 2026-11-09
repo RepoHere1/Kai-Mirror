@@ -2405,7 +2405,7 @@ async function noBook() {
       
       // Spread only where both sides exist; a one-sided book has no spread to test.
       const spread = (no_ask != null) ? no_ask - no_bid : 0;
-      if (no_ask != null && spread > 0.06) { sk('wide_spread'); continue; } // skip wide spreads (the hard thin line)
+      if (no_ask != null && spread > 0.06) { sk('wide_spread'); sabotageBook({ strategy: 'refused:wide-spread', market_id: q.ticker, side: 'NO', entry_price: no_bid, expiration: q.close_time, strike: q.strike }); continue; } // skip wide spreads (the hard thin line); sabotage pays the spread by design
       
       // Deep-value thesis, real basis: we ENTER at the bid (maker), so edge is
       // measured against the bid. Model prob >= min_fair and entry <= cap
@@ -2419,7 +2419,7 @@ async function noBook() {
         const cap = side === 'YES' ? anCfg.max_yes_price : anCfg.max_no_price;
         if (bid == null) { sk('no_bid_side_' + side); return; }
         const sideSpread = askPx != null ? askPx - bid : 0;
-        if (askPx != null && sideSpread > 0.06) { sk('side_spread_wide'); return; } // per-side thin line
+        if (askPx != null && sideSpread > 0.06) { sk('side_spread_wide'); sabotageBook({ strategy: 'refused:side-spread', market_id: q.ticker, side, entry_price: bid, fair: fairSide, expiration: q.close_time, strike: q.strike }); return; } // per-side thin line; sabotage pays the spread by design
         // FAT-TAIL MARGIN: HYPE's jumps crush a smooth gaussian model. Demand
         // more probability margin there.
         const fairFloor = asset === 'HYPE-USD' ? Math.max(anCfg.min_fair, 0.58) : anCfg.min_fair;
@@ -2655,8 +2655,8 @@ function antiBook(q, side, bid, fairSide, calIn, perSec, tau, sp) {
 // /api/inverse shows BOTH columns - what the losing code did, and the exact
 // opposite - so the inversion hypothesis is measured with numbers, not argued.
 // ---------------------------------------------------------------------------
-const SABOTAGE_DEFAULTS = { enabled: true, balance_start: 100, notional_dollars: 0.50, max_concurrent: 30, recharge_below: 10, recharge_to: 100 };
-const SAB_COOLDOWN_MS = 3 * 60 * 1000; // per-ticker cooldown on designed-loser buys
+const SABOTAGE_DEFAULTS = { enabled: true, balance_start: 100, notional_dollars: 0.50, max_concurrent: 60, recharge_below: 10, recharge_to: 100 };
+const SAB_COOLDOWN_MS = 90 * 1000; // per-ticker cooldown on designed-loser buys
 const sabTried = new Map(); // ticker -> ts
 function sabotageState() {
   if (!state.sabotage) state.sabotage = {
