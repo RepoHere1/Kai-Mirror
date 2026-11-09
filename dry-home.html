@@ -469,6 +469,12 @@ body{color:#e9e9e9}div,span,td,th,li,p,label,h1,h2,h3,.v,.k,.s,.num,.mono,.badge
   </div>
 
   <div class="tile">
+    <div class="k">SABOTAGE (paper)</div>
+    <div class="v" id="tSabPnl">-</div>
+    <div class="s" id="tSabNote">&middot; designed to lose &middot; loading&hellip;</div>
+  </div>
+
+  <div class="tile">
     <div class="k">AI spend today</div>
     <div class="v" id="tAiSpend">$0.00</div>
     <div class="s">of $10.00 budget</div>
@@ -496,6 +502,36 @@ body{color:#e9e9e9}div,span,td,th,li,p,label,h1,h2,h3,.v,.k,.s,.num,.mono,.badge
     <tr><td>0.85 up</td><td class="num">1983</td><td class="num">1312</td><td class="num">66.2%</td><td class="num down">$-198.61</td></tr>
   </tbody></table>
   </div></div>
+</div>
+
+<!-- ============ sabotage book ============ -->
+<div class="panel" style="margin-bottom:12px">
+  <div class="ph">
+    <h2>Sabotage book &mdash; designed to lose (paper, quarantined)</h2>
+    <span class="note" id="tSabVerdict">loading&hellip;</span>
+  </div>
+  <div class="pb">
+    <div class="cstats" style="grid-template-columns:repeat(auto-fit,minmax(110px,1fr));margin:0 0 12px">
+      <div><b id="sabPnl" class="down">&hellip;</b><span>sabotage P&amp;L</span></div>
+      <div><b id="sabMirror" class="up">&hellip;</b><span>mirror P&amp;L</span></div>
+      <div><b id="sabCpc">&hellip;</b><span>c/contract (sab vs mirror)</span></div>
+      <div><b id="sabCounts">&hellip;</b><span>settled / open</span></div>
+      <div><b id="sabWin">&hellip;</b><span>win rate (should be low)</span></div>
+      <div><b id="sabBalance">&hellip;</b><span>paper balance</span></div>
+    </div>
+    <div class="scroll">
+    <table><thead><tr><th>Settled</th><th>Market</th><th>Side</th><th class="num">Px</th><th class="num">Qty</th><th>Outcome</th><th class="num">P&amp;L</th><th class="num">Mirror</th><th class="num">Fee</th><th>Source</th></tr></thead>
+    <tbody id="sabBody"><tr><td colspan="10" class="empty">Loading&hellip;</td></tr></tbody></table>
+    </div>
+    <p class="note" style="margin-top:10px;color:var(--faint);font-size:11px">
+      Quarantined paper book: writes only its own ledger &mdash; never the
+      calibration report card above, never the DRY tiles. Every buy is the
+      model-overpriced side or a crossed spread; fees are the real Kalshi
+      formula. Mirror column is the arithmetic opposite of each trade; rows
+      tagged crossed-spread cannot be mirrored in reality (no one hands a
+      taker the spread).
+    </p>
+  </div>
 </div>
 
 <!-- ============ openrouter usage ============ -->
@@ -1749,10 +1785,17 @@ function paint(s) {
           ? 'cost unknown (' + (k.cost_basis_missing || 0) + ' holding' +
             (k.cost_basis_missing === 1 ? '' : 's') + ' predate fill history)'
           : 'cost n/a')));
-    set('tKalshiPnl', money(k.realized));
-    const kr = document.getElementById('tKalshiPnl');
-    if (kr) kr.className = 'v ' + sgn(k.realized || 0);
     const led = k.ledger || {};
+    // TRUTH FIX (2026-11-08): the headline used to print k.realized, which
+    // reads $0.00 while the sub-line beneath it shows the real settled money.
+    // The headline now IS the ledger: sales + settlements - fees. Falls back
+    // to k.realized only when the ledger is absent.
+    const ledgerRealized = (led.sales_realized != null || led.settlement_realized != null)
+      ? (Number(led.sales_realized) || 0) + (Number(led.settlement_realized) || 0) - (Number(k.fees) || 0)
+      : (Number(k.realized) || 0);
+    set('tKalshiPnl', money(ledgerRealized));
+    const kr = document.getElementById('tKalshiPnl');
+    if (kr) kr.className = 'v ' + sgn(ledgerRealized || 0);
     set('tKalshiPnlNote',
       'sales ' + money(led.sales_realized) +
       ' - settled ' + money(led.settlement_realized) +
@@ -1874,6 +1917,42 @@ function paintCards(cards) {
   });
   drawSparks(cards);
 }
+
+  // SABOTAGE panel: the designed-to-lose paper book, live from /api/inverse.
+  // Real numbers only - same source as the JSON, no dashboard-only math.
+  async function refreshSabotage() {
+    try {
+      const d = await fetch('/api/inverse').then(r => r.json());
+      const sb = d.sabotage || {}, mi = d.mirror || {};
+      const setS = (id, v, cls) => { const el = $(id); if (el) { el.textContent = v; if (cls) el.className = cls; } };
+      setS('tSabPnl', money(sb.pnl || 0), 'v ' + sgn(sb.pnl || 0));
+      setS('tSabNote', (sb.settled || 0) + ' settled - ' + (sb.open_positions || 0) + ' open - mirror ' + money(mi.pnl || 0));
+      setS('tSabVerdict', d.verdict || '');
+      setS('sabPnl', money(sb.pnl || 0), sb.pnl > 0 ? 'up' : (sb.pnl < 0 ? 'down' : 'flat'));
+      setS('sabMirror', money(mi.pnl || 0), mi.pnl > 0 ? 'up' : (mi.pnl < 0 ? 'down' : 'flat'));
+      setS('sabCpc', (sb.cents_per_contract == null ? '-' : sb.cents_per_contract + 'c') +
+        ' vs ' + (mi.cents_per_contract == null ? '-' : (mi.cents_per_contract > 0 ? '+' : '') + mi.cents_per_contract + 'c'));
+      setS('sabCounts', (sb.settled || 0) + ' / ' + (sb.open_positions || 0));
+      setS('sabWin', sb.win_rate == null ? '-' : (sb.win_rate * 100).toFixed(1) + '%');
+      setS('sabBalance', money(sb.balance || 0));
+      const tb = $('sabBody');
+      if (tb) {
+        const rows = d.last_trades || [];
+        tb.innerHTML = rows.length ? rows.map(t =>
+          '<tr><td class="mono">' + String(t.at || '').slice(11, 19) + '</td>' +
+          '<td class="mono">' + esc(t.market_id) + '</td>' +
+          '<td>' + esc(t.side) + '</td>' +
+          '<td class="num">' + (t.px != null ? t.px : t.price) + '</td>' +
+          '<td class="num">' + t.qty + '</td>' +
+          '<td class="' + (t.outcome === 'WIN' ? 'up' : 'down') + '">' + esc(t.outcome) + '</td>' +
+          '<td class="num ' + sgn(t.pnl) + '">' + money(t.pnl) + '</td>' +
+          '<td class="num ' + sgn(t.mirror_pnl) + '">' + money(t.mirror_pnl) + '</td>' +
+          '<td class="num">' + money(t.fee || 0) + '</td>' +
+          '<td class="mono">' + esc(t.src || t.source || '') + '</td></tr>'
+        ).join('') : '<tr><td colspan="10" class="empty">no settled sabotage trades yet</td></tr>';
+      }
+    } catch (e) { }
+  }
 
 async function refresh() {
   try {
@@ -2671,6 +2750,8 @@ function safeRun(fn, label) {
 }
 
 // Pollers are registered before anything can throw.
+refreshSabotage();
+setInterval(refreshSabotage, 15000);
 setInterval(refresh, 30000);
 setInterval(loadLogs, 30000);
 setInterval(refreshFeeds, 5000);
