@@ -2748,8 +2748,12 @@ function createAllNoEntry(market_id, entry_price, quantity, fair_at_entry, edge,
   }
   // ANTI-STACK + CLUSTER re-checked at BOOKING time (fill-lag stacking put 8
   // positions into one KXBTC15M market on 2026-11-04: -$8.88 in 6 seconds).
+  // ONE POSITION PER MARKET (2026-11-10, operator order after the 12:17 double
+  // entry: KXXRP15M-26NOV101530-30 booked @0.46 then @0.49 22s apart - the old
+  // >=2 threshold still allowed a second, worse-priced entry on a held market).
+  // Mirrors the LIVE openEntry guard: any already-held market is refused.
   const sameMkt = book.positions.filter(p => p.market_id === market_id).length;
-  if (sameMkt >= 2) return { error: 'Entry refused: anti-stack (already ' + sameMkt + ' positions in ' + market_id + ')' };
+  if (sameMkt >= 1) return { error: 'Entry refused: one position per market (already holding ' + market_id + ')' };
   const sameRound = book.positions.filter(p => p.expiration === expiration).length;
   if (sameRound >= 2) return { error: 'Entry refused: cluster cap (' + sameRound + ' positions already in this round)' };
 

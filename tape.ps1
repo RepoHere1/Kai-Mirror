@@ -102,9 +102,30 @@ if ($seed -and $seed.lanes -and $seed.lanes.trades) {
   if ($null -ne $seed.lanes.total_pnl) { $lastLanePnl = [double]$seed.lanes.total_pnl }
   $lastLaneCount = [int]$seed.lanes.total
 }
+# RESEED AFTER RESTART (2026-11-10): the 12:05:16 flood printed 21 stale closes
+# at once because a running tape held pre-retag ids - any boot-time id change,
+# state restore, or ledger surgery made the whole history look "new". When the
+# server restarts or comes back from down, the next good snapshot is absorbed
+# SILENTLY instead of replayed.
+$needsReseed = $false
 
 while ($true) {
   $snap = Snap
+  if ($snap -and $needsReseed) {
+    # Server restarted / recovered: absorb the whole current state silently so
+    # no id change or ledger surgery can ever replay history as fresh CLOSEs.
+    foreach ($t in @($snap.book.closed_rows)) { $knownClosed[$t.id] = $true }
+    foreach ($p in @($snap.book.open_rows)) { $knownOpen[$p.id] = $true }
+    if ($snap.book.book -and $null -ne $snap.book.book.balance) { $lastBal = [double]$snap.book.book.balance; $balKnown = $true }
+    if ($snap.book.book -and $null -ne $snap.book.book.pnl) { $lastPnl = [double]$snap.book.book.pnl }
+    if ($snap.lanes -and $snap.lanes.trades) {
+      foreach ($t in @($snap.lanes.trades)) { $knownRT["$($t.market_id)|$($t.exit_timestamp)|$($t.entry_price)|$($t.pnl)"] = $true }
+      if ($null -ne $snap.lanes.total_pnl) { $lastLanePnl = [double]$snap.lanes.total_pnl }
+      $lastLaneCount = [int]$snap.lanes.total
+    }
+    $needsReseed = $false
+    Line 'DarkCyan' 'SERVER BACK - tape re-seeded silently (no history replay)'
+  }
   $nb = $null
   if ($snap) {
     $nb = $snap.book
@@ -190,15 +211,17 @@ while ($true) {
   $h = if ($snap) { $snap.health } else { $null }
   if ($h -and $null -ne $h.uptime_sec) {
     $up = [int]$h.uptime_sec
-    if ($lastUptime -ne $null -and $up -lt $lastUptime) { Line 'Magenta' 'SERVER RESTARTED (watchdog or deploy)' }
+    if ($lastUptime -ne $null -and $up -lt $lastUptime) { Line 'Magenta' 'SERVER RESTARTED (watchdog or deploy)'; $needsReseed = $true }
     $lastUptime = $up
   } elseif ($lastUptime -ne -1) {
     if (Test-PortRefused $Cfg.Port) {
       Line 'Magenta' 'SERVER DOWN (port refused) - watchdog should restore within 60s'
       $lastUptime = -1
+      $needsReseed = $true
     } else {
       Line 'DarkYellow' 'SERVER SLOW (no health answer, port still listening - NOT down)'
       $lastUptime = -1
+      $needsReseed = $true
     }
   }
 
