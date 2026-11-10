@@ -1222,7 +1222,12 @@ async function fetchOptionsChain(series) {
 async function marketsForSeries(series, limit) {
   const key = series + ':' + (limit || 5);
   const hit = marketCache.get(key);
-  if (hit && Date.now() - hit.at < 30000) return hit; // static only; bids stream in via quote_stream
+  // Static-only cache (bids stream in via quote_stream). SUCCESS stays at 30s
+  // for quote freshness, but a FAILED fetch cools down for 180s: under IP-level
+  // 429 saturation (both books share one IP) a failing series re-hammered every
+  // 30s kept the budget permanently exhausted - the scan saw ~14 markets/pass,
+  // 0 rows out, harvester starved (tape: HARVEST ... bids 0 ... EV/contract ?).
+  if (hit && Date.now() - hit.at < (hit.source === 'error' ? 180000 : 30000)) return hit;
   try {
     const r = await kalshi.get('/markets', { query: { limit: limit || 5, status: 'open', series_ticker: series }, ttlMs: 1500 });
     const ms = ((r.data && r.data.markets) || []).map(quoteFromMarket);
@@ -2559,7 +2564,7 @@ async function getAllTradableSeries() {
     // 2026-11-04 shared-key fix: go through kalshi.get() so this heavy
     // /markets?limit=500 scan is an UNSIGNED public read (per-IP budget),
     // not a signed live-key call every scan pass.
-    const r = await kalshi.get('/markets', { query: { status: 'open', limit: 500 }, ttlMs: 1500 });
+    const r = await kalshi.get('/markets', { query: { status: 'open', limit: 500 }, ttlMs: 30000 });
     const data = r.data;
     const bySeries = new Map();
     for (const m of data.markets || []) {
@@ -4380,7 +4385,9 @@ async function boot() {
     try { rememberTitles(LANES); broadcast('snapshot', 'tick'); sseMessage({ e: 'tick', at: new Date().toISOString(), spot_btc: spot['BTC-USD'].price }); } catch (e) { }
   }, 3000);
 
-  // ALL NO engine - runs every 10s for entries, every 5s for exits
+  // ALL NO engine - entries every 20s (was 10s: under shared-IP 429 saturation
+  // the doubled pass rate bought nothing and burned the public /markets budget;
+  // exits run on their own 5s clock and are local-book only), every 5s for exits
   // OOM LAW (2026-11-07): busy-flag + clamp - a pass may never overlap-pile
   // (the LIVE twin died at 4GB heap from an undefined interval + outage hangs;
   // Mirror read a safe constant, but the guard is cheap insurance).
@@ -4389,7 +4396,7 @@ async function boot() {
     if (allNoPassInFlight) return;
     allNoPassInFlight = true;
     Promise.resolve(runAllNoEngine()).catch(() => { }).finally(() => { allNoPassInFlight = false; });
-  }, Math.max(2000, Number(ALL_NO_CONFIG.scan_interval_ms) || 10000));
+  }, Math.max(2000, Number(ALL_NO_CONFIG.scan_interval_ms) || 20000));
 setInterval(() => { try { makerKillSweep(); } catch (e) { } }, 30000);
   setInterval(runAllNoExits, 5000);
   // THE CERTAINTY LANE scans on its own clock (the window is only minutes
