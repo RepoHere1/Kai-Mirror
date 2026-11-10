@@ -216,6 +216,21 @@ while ($true) {
   # the log line can never be delayed (or silenced) by a probe.
   $tick += 1
   WLog ("heartbeat #{0} mirror={1} [{2}] live={3} [{4}] strikes=({5}/{6})" -f $tick, $(if ($up['mirror']) {'up'} else {'DOWN'}), $script:MT, $(if ($up['live']) {'up'} else {'DOWN'}), $script:LT, $strikes['mirror'], $strikes['live'])
+  # VM FAMINE GAUGE (2026-11-10): the 14:36 SERVER SLOW on BOTH books was the
+  # 7.9GB box hitting the commit limit (explorer.exe 4.2GB + chrome 2.5GB +
+  # cline 2.3GB; mirror loop_lag 74.7s, LIVE 6.9s - Resource-Exhaustion events
+  # 14:36:45/14:37:54). Nothing in-process survives commit famine, so the
+  # watchdog prints the gauge every minute and shouts BEFORE the cliff. The
+  # CIM read sits AFTER the heartbeat line so no probe can delay a heartbeat.
+  try {
+    $osVm = Get-CimInstance Win32_OperatingSystem
+    $vmFreeGB = [Math]::Round($osVm.FreeVirtualMemory / 1MB, 1)
+    $vmTotGB = [Math]::Round($osVm.TotalVirtualMemorySize / 1MB, 1)
+    WLog ("vm {0}G free of {1}G commit" -f $vmFreeGB, $vmTotGB)
+    if ($vmFreeGB -lt 1.0) {
+      WLog ("LOW VM: {0}G commit free - books WILL stall (loop_lag) long before ports close. Kill the hogs: restart explorer.exe (taskkill /f /im explorer.exe; start explorer.exe), close chrome tabs / stale cline instances." -f $vmFreeGB)
+    }
+  } catch { WLog "vm gauge threw: $($_.Exception.Message)" }
   try {
     $script:MT = Format-Tape (Get-Health 8787)
     $script:LT = Format-Tape (Get-Health 8788)
