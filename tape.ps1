@@ -262,25 +262,28 @@ while ($true) {
       $hcol = if ($null -eq $ev) { 'DarkYellow' } elseif ([double]$ev -gt 0) { 'Green' } else { 'Red' }
       HourLine $hcol ("HARVEST {0} open | bids {1} filled {2} settled {3} wins {4} | EV/contract {5}" -f $hv.open_positions, $hv.stats.intents, $hv.stats.filled, $hv.stats.settled, $hv.stats.wins, $evTxt)
     }
-    # REHAB, on the tape (operator commission 2026-11-10): medical intervention
-    # for refuted lanes. Yellow = a lane returned on probation (treated); Red =
-    # hospice (incurable or second strike). Silent while all lanes are clean.
+    # REHAB v2, on the tape (operator commission 2026-11-10): DNA-revamp system
+    # for refuted lanes. Yellow = a lane trading again on a measured entry DNA
+    # (probation/graduated); Red = halted (death spiral, refuted cohort, no +EV
+    # DNA, or generation cap). Silent while all lanes are clean.
     $rh = J "http://127.0.0.1:$($Cfg.Port)/api/rehab"
     if ($rh -and $rh.lanes) {
       $rhTxt = @()
+      $rhcol = 'Yellow'
       foreach ($k in @($rh.lanes.PSObject.Properties.Name)) {
         $r = $rh.lanes.$k
         if ($r.status -and $r.status -ne 'clean') {
-          $d = $r.diagnosis
-          $rhTxt += ("{0}:{1}" -f $k, $r.status)
-          if ($r.bar) { $rhTxt[$rhTxt.Count-1] += (" bar>={0}" -f $r.bar) }
-          if ($d -and $d.mode) { $rhTxt[$rhTxt.Count-1] += (" ({0}, n={1})" -f $d.mode, $d.n) }
+          $t = "{0}:{1}(g{2})" -f $k, $r.status, $(if ($null -ne $r.gen) { $r.gen } else { 0 })
+          if ($r.dna) { $t += (" DNA e>={0} p[{1},{2}]" -f $r.dna.edge_bar, $r.dna.price_min, $r.dna.price_max) }
+          if ($null -ne $r.cohort_n -and $r.cohort_n -gt 0) { $t += (" n={0} ev={1}" -f $r.cohort_n, $r.cohort_ev) }
+          if ($r.status -eq 'halted') {
+            $rhcol = 'Red'
+            if ($r.halt_reason) { $t += (" [{0}]" -f $r.halt_reason) }
+          }
+          $rhTxt += $t
         }
       }
       if ($rhTxt.Count -gt 0) {
-        $rhHasHospice = $false
-        foreach ($k in @($rh.lanes.PSObject.Properties.Name)) { if ($rh.lanes.$k.status -eq 'hospice') { $rhHasHospice = $true } }
-        $rhcol = if ($rhHasHospice) { 'Red' } else { 'Yellow' }
         HourLine $rhcol ("REHAB {0}" -f ($rhTxt -join ' | '))
       }
     }

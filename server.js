@@ -1003,10 +1003,11 @@ CALIB.init().catch((e) => { console.error('[calibration] boot failed:', e.messag
 // refuted verdict clamps paper size to 1 contract instead of blocking (LIVE
 // enforces the hard block). Verdicts can only change from outcomes, and dry
 // is where outcomes are cheapest to earn. See alpha_gate.js.
-// REHAB (2026-11-10, operator commission): medical intervention for refuted
-// lanes - diagnose (what KIND of bad), treat with a corrected entry bar when
-// the lane's own record replays positive under one, return on 1-contract
-// probation, hospice when incurable. Second strike on probation is permanent.
+// REHAB v2 (2026-11-10, operator commission): DNA-revamp for refuted lanes -
+// retrofit a measured ENTRY DNA (edge bar + price band) mined from the lane's
+// own closed trades, return on 1-contract probation, halt at once on a death
+// spiral or refuted cohort. No hospice: a halted lane re-diagnoses as its
+// record grows, capped at 5 generations.
 if (!state.runtime.rehab) state.runtime.rehab = {};
 const REHAB = require('./rehab').create({
   getTrades: () => [].concat(state.dry.closed || [], ((state.all_no[state.mode] || {}).closed_trades) || []),
@@ -1660,11 +1661,17 @@ function openDryPosition(lane, q, side, price, fair, edge, sigma, opts) {
   if (typeof ALPHA !== 'undefined' && ALPHA) {
     const av = ALPHA.verdict(lane && lane.name);
     if (av && av.max_qty != null) {
-      const target = av.max_qty === 0 ? 1 : av.max_qty;
+      // Halted (max_qty 0) = no contracts at all. Only paper probation/unproven clamp to 1.
+      const target = av.max_qty;
       if (qty > target) {
         qty = target;
         log('alpha_gate_clamped', { lane: lane.name, ticker: q.ticker, verdict: av.verdict, reason: av.reason, qty });
       }
+    }
+    // REHAB DNA (2026-11-10): a lane on probation trades only inside its DNA.
+    if (typeof REHAB !== 'undefined' && REHAB) {
+      const rhd = REHAB.entryCheck(lane && lane.name, edge, price);
+      if (!rhd.ok) { const lr = laneState(lane.name); lr.skips++; lr.last_skip = rhd.reason; log('rehab_bar_refused', { lane: lane.name, ticker: q.ticker, edge, price, dna: rhd.dna }); return null; }
     }
   }
   // FEED GATE (2026-11-07): a stale spot feed makes fair values fiction even
@@ -2821,9 +2828,10 @@ function createAllNoEntry(market_id, entry_price, quantity, fair_at_entry, edge,
   // Mirrors the LIVE openEntry guard: any already-held market is refused.
   const sameMkt = book.positions.filter(p => p.market_id === market_id).length;
   if (sameMkt >= 1) return { error: 'Entry refused: one position per market (already holding ' + market_id + ')' };
-  // REHAB BAR (2026-11-10): a lane on probation trades only above its
-  // corrected entry bar. Refusal here is treatment, not punishment.
-  const rh = REHAB.entryCheck(x.strategy || 'all_no_markets', edge);
+  // REHAB DNA (2026-11-10): a lane on probation trades only inside its
+  // measured DNA - edge bar AND price band. Refusal here is treatment, not
+  // punishment.
+  const rh = REHAB.entryCheck(x.strategy || "all_no_markets", edge, entry_price);
   if (!rh.ok) return { error: rh.reason };
   const sameRound = book.positions.filter(p => p.expiration === expiration).length;
   if (sameRound >= 2) return { error: 'Entry refused: cluster cap (' + sameRound + ' positions already in this round)' };
@@ -3211,7 +3219,7 @@ if (p === '/api/alpha') {
   return json(res, ALPHA.report());
 }
   // MEDICAL INTERVENTION, VISIBLE: what the rehab unit is doing to each
-  // refuted lane (diagnosis, treatment bar, probation cohort, hospice).
+  // refuted lane (generation, entry DNA, probation cohort, halt reason).
   if (p === '/api/rehab') return json(res, REHAB.report());
   // THE HARVESTER, VISIBLE: resting-order stats, fill rate, settled EV.
   if (p === '/api/harvester') return json(res, HARVEST.snapshot());
