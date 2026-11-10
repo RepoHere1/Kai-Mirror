@@ -126,6 +126,6 @@ Evidence-based, from the dry book's own ledgers:
    10 -> 24, exposure 40% -> 60%, loss cooldown 120s -> 30s, harvester 8 -> 16
    positions at 6c edge (was 8c).
 
-Unchanged: quarantine (sabotage never touches calibration or main book),
-order cap \.50/contract, anti-stack/cluster/lifetime market caps, dead stops.
+Unchanged: quarantine, order cap $.50/contract, anti-stack/cluster/lifetime
+market caps, dead stops.
 
