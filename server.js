@@ -938,6 +938,39 @@ try {
     ' BOOT source=' + STATE_SOURCE + ' safe_mode=' + (state.safe_mode ? 'YES' : 'no') +
     ' error=' + (STATE_LOAD_ERROR || 'none') + '\n');
 } catch (e) { }
+// LEDGER RETAG (2026-11-10): legacy all_no closed rows can share an id (two
+// entries booked in the same market in the same millisecond). Give every closed
+// row a unique id (first keeps it, later ones get -dup2/-dup3) so the
+// close-dedupe guard is exact and history keys never collide. Runs before any
+// sweep; idempotent (after the first pass there is nothing left to retag).
+try {
+  let retagged = 0;
+  for (const modeKey of Object.keys(state.all_no || {})) {
+    const bk = state.all_no[modeKey];
+    if (!bk || !Array.isArray(bk.closed_trades)) continue;
+    const seen = new Set();
+    for (const t of bk.closed_trades) {
+      if (!t.id) continue;
+      if (seen.has(t.id)) {
+        let n = 2;
+        while (seen.has(t.id + '-dup' + n)) n++;
+        t.id = t.id + '-dup' + n;
+        retagged++;
+      }
+      seen.add(t.id);
+    }
+  }
+  if (retagged > 0) {
+    fs.appendFileSync(path.join(HERE, 'crash.log'), new Date().toISOString() +
+      ' LEDGER_RETAG unique ids restored on ' + retagged + ' legacy closed rows\n');
+    try { save(); } catch (e) { }
+  }
+} catch (e) {
+  try {
+    fs.appendFileSync(path.join(HERE, 'crash.log'), new Date().toISOString() +
+      ' LEDGER_RETAG failed: ' + (e && e.message ? e.message : String(e)) + '\n');
+  } catch (e2) { }
+}
 // The paper book may only book a fill when a REAL public print proves it happened.
 const FILLSIM = fillSim.create({ getState: () => state, log: (k, o) => { try { log(k, o); } catch (e) {} } });
 // THE VACCINE (2026-11-04): empirical probability ledger. The model's claimed
@@ -2731,7 +2764,11 @@ function createAllNoEntry(market_id, entry_price, quantity, fair_at_entry, edge,
     return { error: 'Insufficient balance: need ' + (cost + fee_entry).toFixed(2) + ', have ' + book.balance.toFixed(2) };
   }
 
-  const id = market_id + '-' + Date.now();
+  // UNIQUE POSITION IDS (2026-11-10): market_id + Date.now() collided when two
+  // entries booked the same market in the same millisecond (71 legacy closed
+  // rows share ids in pairs/triples from the pre-anti-stack era). The random
+  // suffix makes future id collisions impossible.
+  const id = market_id + '-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6);
   const position = {
     id,
     market_id,
@@ -2774,6 +2811,14 @@ function closeAllNoPosition(position_id, exit_price, exit_reason) {
 
   const idx = book.positions.findIndex(p => p.id === position_id);
   if (idx === -1) return { error: 'Position not found' };
+
+  // CLOSE IDEMPOTENCY (2026-11-10): a replayed sweep or a rollback-reopened
+  // position must never credit proceeds twice for the same settled id. With
+  // collision-free ids (createAllNoEntry) and the boot retag of legacy rows,
+  // this membership check is exact.
+  if ((book.closed_trades || []).some(t => t.id === position_id)) {
+    return { error: 'Close refused: position already settled (dedupe guard)' };
+  }
 
   const pos = book.positions[idx];
   const proceeds = Number((pos.quantity * exit_price).toFixed(2));
