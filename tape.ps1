@@ -262,6 +262,28 @@ while ($true) {
       $hcol = if ($null -eq $ev) { 'DarkYellow' } elseif ([double]$ev -gt 0) { 'Green' } else { 'Red' }
       HourLine $hcol ("HARVEST {0} open | bids {1} filled {2} settled {3} wins {4} | EV/contract {5}" -f $hv.open_positions, $hv.stats.intents, $hv.stats.filled, $hv.stats.settled, $hv.stats.wins, $evTxt)
     }
+    # REHAB, on the tape (operator commission 2026-11-10): medical intervention
+    # for refuted lanes. Yellow = a lane returned on probation (treated); Red =
+    # hospice (incurable or second strike). Silent while all lanes are clean.
+    $rh = J "http://127.0.0.1:$($Cfg.Port)/api/rehab"
+    if ($rh -and $rh.lanes) {
+      $rhTxt = @()
+      foreach ($k in @($rh.lanes.PSObject.Properties.Name)) {
+        $r = $rh.lanes.$k
+        if ($r.status -and $r.status -ne 'clean') {
+          $d = $r.diagnosis
+          $rhTxt += ("{0}:{1}" -f $k, $r.status)
+          if ($r.bar) { $rhTxt[$rhTxt.Count-1] += (" bar>={0}" -f $r.bar) }
+          if ($d -and $d.mode) { $rhTxt[$rhTxt.Count-1] += (" ({0}, n={1})" -f $d.mode, $d.n) }
+        }
+      }
+      if ($rhTxt.Count -gt 0) {
+        $rhHasHospice = $false
+        foreach ($k in @($rh.lanes.PSObject.Properties.Name)) { if ($rh.lanes.$k.status -eq 'hospice') { $rhHasHospice = $true } }
+        $rhcol = if ($rhHasHospice) { 'Red' } else { 'Yellow' }
+        HourLine $rhcol ("REHAB {0}" -f ($rhTxt -join ' | '))
+      }
+    }
     # SUPER-DETECTIVE (operator commission 2026-11-07): factual-edge mining
     # across Kalshi/Polymarket/Manifold + our own settled trades. Yellow = a
     # walk-forward-confirmed edge is on the table right now.

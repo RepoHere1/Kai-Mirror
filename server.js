@@ -971,6 +971,21 @@ try {
       ' LEDGER_RETAG failed: ' + (e && e.message ? e.message : String(e)) + '\n');
   } catch (e2) { }
 }
+// EVENT-LOOP LAG MONITOR (2026-11-10): the tape's SERVER SLOW lines were
+// health timeouts on a STATIC endpoint - only a blocked event loop can do
+// that. The blocker (the synchronous state write) is fixed below; this
+// monitor measures whatever remains and surfaces it in /api/health so the
+// next stall is a number, not a mystery.
+var LOOP_LAG_MAX = 0;
+setInterval(() => {
+  const t0 = Date.now();
+  setImmediate(() => {
+    const lag = Date.now() - t0;
+    if (lag > LOOP_LAG_MAX) LOOP_LAG_MAX = lag;
+    if (lag >= 1000) { try { log('loop_lag', { ms: lag }); } catch (e) { } }
+  });
+}, 5000);
+setInterval(() => { LOOP_LAG_MAX = 0; }, 5 * 60 * 1000); // 5-minute max window
 // The paper book may only book a fill when a REAL public print proves it happened.
 const FILLSIM = fillSim.create({ getState: () => state, log: (k, o) => { try { log(k, o); } catch (e) {} } });
 // THE VACCINE (2026-11-04): empirical probability ledger. The model's claimed
@@ -988,8 +1003,19 @@ CALIB.init().catch((e) => { console.error('[calibration] boot failed:', e.messag
 // refuted verdict clamps paper size to 1 contract instead of blocking (LIVE
 // enforces the hard block). Verdicts can only change from outcomes, and dry
 // is where outcomes are cheapest to earn. See alpha_gate.js.
+// REHAB (2026-11-10, operator commission): medical intervention for refuted
+// lanes - diagnose (what KIND of bad), treat with a corrected entry bar when
+// the lane's own record replays positive under one, return on 1-contract
+// probation, hospice when incurable. Second strike on probation is permanent.
+if (!state.runtime.rehab) state.runtime.rehab = {};
+const REHAB = require('./rehab').create({
+  getTrades: () => [].concat(state.dry.closed || [], ((state.all_no[state.mode] || {}).closed_trades) || []),
+  getRecords: () => state.runtime.rehab,
+  log: (k, o) => { try { log(k, o); } catch (e) {} },
+});
 const ALPHA = require('./alpha_gate').create({
   getTrades: () => state.dry.closed || [],
+  rehab: REHAB,
   certaintyStats: () => { try { return FACTS.certaintyStats(); } catch (e) { return null; } },
   vaccine: () => { try { return (CALIB.snapshot() || {}).vaccine_gate || null; } catch (e) { return null; } },
   log: (k, o) => { try { log(k, o); } catch (e) {} },
@@ -1066,8 +1092,49 @@ function save() {
   if (saveTimer) return;
   saveTimer = setTimeout(() => {
     saveTimer = null;
-    writeStateAtomic();
+    let payload = null;
+    try { payload = safeStringify(state); } catch (e) { noteStateWriteError('stringify', e); return; }
+    writeChain = writeChain.then(() => writeStateAsync(payload)).catch(() => {});
   }, 250);
+}
+// ASYNC STATE WRITES (2026-11-10): the tape's SERVER SLOW lines were health
+// timeouts on a static endpoint - the only possible cause is a blocked event
+// loop, and the blocker was writeStateAtomic's synchronous write+fsync+rename
+// of the ~1.5MB state.json (plus the 15s copyFileSync backup) on every
+// debounced save. The hot path moves the entire write/fsync/rename/copy onto
+// the thread pool via fs.promises; durability is kept (FileHandle.sync() is
+// the async fsync). The synchronous writeStateAtomic remains ONLY for the
+// shutdown flush, where a blocking write is exactly what is wanted.
+let writeChain = Promise.resolve();
+function writeStateAsync(payload) {
+  const tmp = STATE_TMP_FILE + '.' + process.pid;
+  return (async () => {
+    try {
+      const fh = await fs.promises.open(tmp, 'w');
+      try { await fh.writeFile(payload); await fh.sync(); } finally { await fh.close(); }
+    } catch (e) {
+      noteStateWriteError('write', e);
+      try { await fs.promises.unlink(tmp); } catch (e2) { }
+      return false;
+    }
+    try {
+      await fs.promises.rename(tmp, STATE_FILE);
+    } catch (e) {
+      noteStateWriteError('rename-fallback', e);
+      try {
+        await fs.promises.writeFile(STATE_FILE, payload);
+        await fs.promises.unlink(tmp);
+      } catch (e2) { noteStateWriteError('write', e2); return false; }
+    }
+    try {
+      const now = Date.now();
+      if (!writeStateAtomic._last || now - writeStateAtomic._last > 15000) {
+        await fs.promises.copyFile(STATE_FILE, STATE_BACKUP_FILE);
+        writeStateAtomic._last = now;
+      }
+    } catch (e) { }
+    return true;
+  })();
 }
 function laneState(name) {
   if (!state.lanes[name]) {
@@ -2754,6 +2821,10 @@ function createAllNoEntry(market_id, entry_price, quantity, fair_at_entry, edge,
   // Mirrors the LIVE openEntry guard: any already-held market is refused.
   const sameMkt = book.positions.filter(p => p.market_id === market_id).length;
   if (sameMkt >= 1) return { error: 'Entry refused: one position per market (already holding ' + market_id + ')' };
+  // REHAB BAR (2026-11-10): a lane on probation trades only above its
+  // corrected entry bar. Refusal here is treatment, not punishment.
+  const rh = REHAB.entryCheck(x.strategy || 'all_no_markets', edge);
+  if (!rh.ok) return { error: rh.reason };
   const sameRound = book.positions.filter(p => p.expiration === expiration).length;
   if (sameRound >= 2) return { error: 'Entry refused: cluster cap (' + sameRound + ' positions already in this round)' };
 
@@ -3063,7 +3134,7 @@ async function handle(req, res) {
 
   // --- health / settings
   if (p === '/api/health') {
-    return json(res, { ok: true, safe_mode: !!state.safe_mode, state_source: state.state_source || 'primary', boots: state.boot_count || 0, pid: process.pid,
+    return json(res, { ok: true, safe_mode: !!state.safe_mode, state_source: state.state_source || 'primary', boots: state.boot_count || 0, pid: process.pid, loop_lag_ms_max: LOOP_LAG_MAX,
       ok: true, mode: state.mode, uptime_sec: Math.round((Date.now() - new Date(state.booted_at).getTime()) / 1000),
       // TAPE BLOCK (2026-11-05): calib init stage + vaccine gate + memory, all
       // in-memory. The watchdog heartbeat prints this every minute.
@@ -3139,6 +3210,9 @@ if (p === '/api/alpha') {
   // that LIVE enforces says about the dry record.
   return json(res, ALPHA.report());
 }
+  // MEDICAL INTERVENTION, VISIBLE: what the rehab unit is doing to each
+  // refuted lane (diagnosis, treatment bar, probation cohort, hospice).
+  if (p === '/api/rehab') return json(res, REHAB.report());
   // THE HARVESTER, VISIBLE: resting-order stats, fill rate, settled EV.
   if (p === '/api/harvester') return json(res, HARVEST.snapshot());
   if (p === '/api/cache') return json(res, { ok: true, stats: kalshi.getCacheStats ? kalshi.getCacheStats() : { error: 'not available' } });
