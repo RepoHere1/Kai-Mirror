@@ -1666,12 +1666,29 @@ function openDryPosition(lane, q, side, price, fair, edge, sigma, opts) {
       if (qty > target) {
         qty = target;
         log('alpha_gate_clamped', { lane: lane.name, ticker: q.ticker, verdict: av.verdict, reason: av.reason, qty });
+        // SHADOW THE REFUSAL (operator order 2026-11-10 "spank"): a qty-0
+        // clamp is a refused entry, and a refused entry is FREE evidence. The
+        // halted lane keeps earning verdict data while it cannot trade.
+        if (qty === 0) {
+          try {
+            CALIB.shadowOpen({ ticker: q.ticker, side: side || 'NO', strategy: lane && lane.name, claimed: fair, price,
+              gate: CALIB.gate({ ticker: q.ticker, side: side || 'NO', strategy: lane && lane.name, claimed: fair, price, minEdge: 0.05 }) });
+          } catch (e) { }
+        }
       }
     }
     // REHAB DNA (2026-11-10): a lane on probation trades only inside its DNA.
     if (typeof REHAB !== 'undefined' && REHAB) {
       const rhd = REHAB.entryCheck(lane && lane.name, edge, price);
-      if (!rhd.ok) { const lr = laneState(lane.name); lr.skips++; lr.last_skip = rhd.reason; log('rehab_bar_refused', { lane: lane.name, ticker: q.ticker, edge, price, dna: rhd.dna }); return null; }
+      if (!rhd.ok) { const lr = laneState(lane.name); lr.skips++; lr.last_skip = rhd.reason; log('rehab_bar_refused', { lane: lane.name, ticker: q.ticker, edge, price, dna: rhd.dna });
+        // SHADOW THE DNA REFUSAL (operator order 2026-11-10): out-of-DNA
+        // candidates are exactly what the NEXT DNA generation needs as
+        // evidence. Silence here starves the rehab loop it belongs to.
+        try {
+          CALIB.shadowOpen({ ticker: q.ticker, side: side || 'NO', strategy: lane && lane.name, claimed: fair, price,
+            gate: CALIB.gate({ ticker: q.ticker, side: side || 'NO', strategy: lane && lane.name, claimed: fair, price, minEdge: 0.05 }) });
+        } catch (e) { }
+        return null; }
     }
   }
   // FEED GATE (2026-11-07): a stale spot feed makes fair values fiction even
@@ -4201,7 +4218,13 @@ async function runAllNoEngine() {
   // all_no ENTRIES below still obey the lane's own switch.
   const harvOn = !!(state.harvester && state.harvester.enabled !== false);
   const laneOn = !!(noLs && noLs.running);
-  if (!laneOn && !harvOn) return;
+  // SHADOW-ONLY SCAN (operator order 2026-11-10 "spank"): a stopped all_no
+  // lane no longer blinds the evidence machine. The old law of this line
+  // (!laneOn && !harvOn -> return) meant a stopped lane starved the shadow
+  // grid to zero - the one ledger that could re-earn its right to run. The
+  // scan now ALWAYS runs; a stopped lane contributes ZERO orders and ZERO
+  // bookings (the entry loop below still obeys laneOn) - only shadow rows.
+  // ls.running is never written here; the operator's button stays absolute.
   if (laneOn) {
     noLs.heartbeat = new Date().toISOString(); // scanner-alive truth every pass
     laneState('anti_model').heartbeat = noLs.heartbeat; // fade lane rides the same scan
@@ -4215,7 +4238,25 @@ async function runAllNoEngine() {
   // THE HARVESTER rides the same scan: resting maker bids wherever the
   // empirical ledger pays (>= 6c edge, n>=50 proof). Paper only.
   try { if (harvOn) HARVEST.run(rows); } catch (e) { }
-  if (!laneOn) return; // all_no entries obey their own lane switch; evidence already rode
+  if (!laneOn) {
+    // SHADOW-ONLY MODE: every row that passed ALL entry gates becomes a free
+    // shadow - exactly the entries a running lane would have made. The 10-min
+    // per-ticker dedupe inside shadowOpen bounds repetition; nothing books,
+    // nothing posts, nothing orders.
+    try {
+      let shadowed = 0;
+      for (const r of rows) {
+        const ok = CALIB.shadowOpen({ ticker: r.market_id, side: r.side || 'NO', strategy: 'all_no_markets',
+          claimed: r.fair, price: r.limit_entry,
+          sigma: r.sigma != null ? r.sigma : null, tau: r.tau != null ? r.tau : null,
+          strike: r.strike != null ? r.strike : null, spot: (r.spot_product && spot[r.spot_product] && spot[r.spot_product].price) || null,
+          gate: CALIB.gate({ ticker: r.market_id, side: r.side || 'NO', strategy: 'all_no_markets', claimed: r.fair, price: r.limit_entry, minEdge: 0.05 }) });
+        if (ok) shadowed++;
+      }
+      if (shadowed > 0) log('shadow_only_scan', { lane: 'all_no_markets', candidates: rows.length, shadowed });
+    } catch (e) { }
+    return; // all_no entries obey their own lane switch; evidence already rode
+  }
   const book = state.all_no[state.mode];
   if (!book || book.balance < 5) { noLs.last_skip = 'book balance below $5 floor'; return; }
   
