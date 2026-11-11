@@ -35,7 +35,16 @@ if ($lastBeat -gt [datetime]::MinValue -and $age -gt 180 -and $alive.Count -gt 0
   $alive = @()
 }
 # --- 2. no live watchdog -> launch one -------------------------------------
-if ($alive.Count -eq 0) {
+# HEARTBEAT VETO (2026-11-11): the CIM process probe above went intermittently
+# blind on this box - 543 false 'no watchdog alive - launching' fires between
+# 2026-11-09 17:21 and 2026-11-11 09:05 while the real watchdog (looping every
+# 60s, strikes 0/0) was alive the whole time; every false fire spawned a hidden
+# powershell that the mutex turned away. The heartbeat parsed in step 1 is the
+# PRIMARY liveness proof: a FRESH (<180s) heartbeat vetoes a launch no matter
+# what the process probe claims. Process-match only breaks ties when the log is
+# stale or empty (true death, or first boot before any log line exists).
+$hbFresh = ($lastBeat -gt [datetime]::MinValue -and $age -le 180)
+if (-not $hbFresh -and $alive.Count -eq 0) {
   Add-Content $WdLog ("{0} KEEPALIVE: no watchdog alive - launching" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'))
   Start-Process -FilePath 'powershell.exe' -WindowStyle Hidden `
     -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', $WdScript
