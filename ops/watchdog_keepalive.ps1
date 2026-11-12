@@ -51,8 +51,18 @@ if ($lastBeat -gt [datetime]::MinValue -and $age -gt 180 -and $alive.Count -gt 0
 # -3600 <= 180, so the keepalive refused to resurrect the fleet. Negative
 # age = NOT fresh.
 $hbFresh = ($lastBeat -gt [datetime]::MinValue -and $age -ge 0 -and $age -le 180)
-if (-not $hbFresh -and $alive.Count -eq 0) {
-  Add-Content $WdLog ("{0} KEEPALIVE: no watchdog alive - launching" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'))
+# STALE = LAUNCH, UNCONDITIONALLY (2026-11-12): the 15:41-15:45 live test killed
+# the watchdog; the task fired at 15:43:43 with hbAge=215s (STALE) yet launched
+# NOTHING and logged NOTHING - the task-context child died silently or a
+# phantom CIM 'alive' vetoed us (this box's documented task-context curse). A
+# false launch is harmless (watchdog.ps1's mutex turns extras away); a missed
+# launch is an unwatched fleet. So a stale/absent heartbeat launches regardless
+# of what the process probe claims. A real wedged holder is killed by step 1 on
+# this or the next fire. Every fire LOGS its verdict - silent curse behavior is
+# no longer invisible.
+Add-Content $WdLog ("{0} KEEPALIVE fire: hbAge={1:n0}s aliveProbe={2} verdict={3}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $age, $alive.Count, $(if ($lastBeat -eq [datetime]::MinValue) { 'no-log' } elseif ($hbFresh) { 'veto-fresh' } else { 'LAUNCH' }))
+if (-not $hbFresh) {
+  Add-Content $WdLog ("{0} KEEPALIVE: heartbeat stale/absent - launching watchdog" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'))
   Start-Process -FilePath 'powershell.exe' -WindowStyle Hidden `
     -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', $WdScript
 }
