@@ -43,7 +43,14 @@ if ($lastBeat -gt [datetime]::MinValue -and $age -gt 180 -and $alive.Count -gt 0
 # PRIMARY liveness proof: a FRESH (<180s) heartbeat vetoes a launch no matter
 # what the process probe claims. Process-match only breaks ties when the log is
 # stale or empty (true death, or first boot before any log line exists).
-$hbFresh = ($lastBeat -gt [datetime]::MinValue -and $age -le 180)
+# CLOCK-REGRESSION GUARD (2026-11-12): a heartbeat stamped in the FUTURE
+# ($age < 0) is impossible on a healthy clock - it means the clock jumped
+# BACKWARD. That really happened: the box came back from a restart with the
+# CMOS clock 1h slow (NTP corrected it 14:25->15:25 local), and for 40 min
+# this veto read the DEAD watchdog's old heartbeat as "fresh" because
+# -3600 <= 180, so the keepalive refused to resurrect the fleet. Negative
+# age = NOT fresh.
+$hbFresh = ($lastBeat -gt [datetime]::MinValue -and $age -ge 0 -and $age -le 180)
 if (-not $hbFresh -and $alive.Count -eq 0) {
   Add-Content $WdLog ("{0} KEEPALIVE: no watchdog alive - launching" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'))
   Start-Process -FilePath 'powershell.exe' -WindowStyle Hidden `
