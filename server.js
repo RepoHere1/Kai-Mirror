@@ -39,6 +39,7 @@ const perp = require('./perp_feed');
 const series_kind = require('./series_kind');
 const fillSim = require('./fill_sim');
 const conviction = require('./conviction');
+const paperRebaseMod = require('./paper_rebase');
 const calibrationMod = require('./calibration');
 const harvesterMod = require('./harvester');
 const certainty = require('./certainty');
@@ -785,8 +786,13 @@ try {
 let STATE_SOURCE = 'primary';
 let STATE_LOAD_ERROR = null;
 const DRY_PAPER_STARTING_BALANCE = 10000; // Paper trading starting balance
+const ALL_NO_PAPER_STARTING_BALANCE = 250; // Paper all_no book starting balance
+// FORBIDDEN SEED (operator order 2026-11-12): the dry books once carried
+// $303 - the REAL Kalshi account's cash snapshot - as their paper start, so
+// the tape printed a growing balance that mirrored real money. Paper books
+// start from the declared constants above, never real cash. See paper_rebase.js.
 function defaultState() {
-  const allNoStart = 250;
+  const allNoStart = ALL_NO_PAPER_STARTING_BALANCE;
   return {
     mode: 'dry',
     no_lanes_enabled: true,
@@ -999,6 +1005,28 @@ try {
       ' LEDGER_RETAG failed: ' + (e && e.message ? e.message : String(e)) + '\n');
   } catch (e2) { }
 }
+// PAPER SEED REBASE (operator order 2026-11-12: "you can't have that balance
+// in fake reality"): swap the legacy $303 real-cash seed for the declared
+// paper starts. One-time, idempotent, balance shifted by the same delta so
+// every booked trade and pnl is preserved exactly. crash.log carries the
+// audit trail.
+try {
+  const seedRebase = paperRebaseMod.rebaseBooks(state, {
+    allNoPaperStart: ALL_NO_PAPER_STARTING_BALANCE,
+    dryPaperStart: DRY_PAPER_STARTING_BALANCE,
+  });
+  if (seedRebase.rebased.length > 0) {
+    fs.appendFileSync(path.join(HERE, 'crash.log'), new Date().toISOString() +
+      ' PAPER_SEED_REBASE ' + JSON.stringify(seedRebase.rebased) + '\n');
+    try { save(); } catch (e) { }
+  }
+} catch (e) {
+  try {
+    fs.appendFileSync(path.join(HERE, 'crash.log'), new Date().toISOString() +
+      ' PAPER_SEED_REBASE failed: ' + (e && e.message ? e.message : String(e)) + '\n');
+  } catch (e2) { }
+}
+
 // EVENT-LOOP LAG MONITOR (2026-11-10): the tape's SERVER SLOW lines were
 // health timeouts on a STATIC endpoint - only a blocked event loop can do
 // that. The blocker (the synchronous state write) is fixed below; this
@@ -1498,7 +1526,7 @@ function effectiveClip() {
   const cs = clipState();
   if (cs.ratchet_until && Date.now() < cs.ratchet_until) return Math.min(ORDER_MAX_DOLLARS, cs.base);
   const equity = dryEquity();
-  const baseline = state.dry.starting_balance || 303;
+  const baseline = state.dry.starting_balance || DRY_PAPER_STARTING_BALANCE;
   const target = Math.round(cs.base * Math.max(1, equity / baseline));
   return Math.min(ORDER_MAX_DOLLARS, Math.max(cs.base, Math.min(cs.max, target)));
 }
@@ -1860,10 +1888,10 @@ function closeDryPosition(pos, exitPrice, reason, result) {
   ls.trades++;
   if (pnl > 0) ls.wins++; else {
   ls.losses++; ls.loss_cooldown_until = Date.now() + (state.runtime.loss_cooldown_sec || 30) * 1000;
-  if (pnl < 0 && Math.abs(pnl) >= 0.25 * (state.dry.starting_balance || 303)) {
+  if (pnl < 0 && Math.abs(pnl) >= 0.25 * (state.dry.starting_balance || DRY_PAPER_STARTING_BALANCE)) {
     state.clip_state = state.clip_state || { base: 3, max: 25, ratchet_until: 0 };
     state.clip_state.ratchet_until = Date.now() + 30 * 60 * 1000;
-    log('clip_ratchet', { pnl, baseline: state.dry.starting_balance || 303 });
+    log('clip_ratchet', { pnl, baseline: state.dry.starting_balance || DRY_PAPER_STARTING_BALANCE });
   }
 }
   ls.realized = Number((ls.realized + pnl).toFixed(2));
