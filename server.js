@@ -640,7 +640,22 @@ const LANES = [
   { name: 'eth_1h_updown', label: 'ETH Daily Ladder', series: 'KXETHD', seriesList: ['KXETHD'], spot: 'ETH-USD', asset: 'ETH', horizon: '1d', deep: 300 },
   { name: 'xrp_1h_updown', label: 'XRP Daily Ladder', series: 'KXXRPD', seriesList: ['KXXRPD'], spot: 'XRP-USD', asset: 'XRP', horizon: '1d', deep: 300 },
   { name: 'hyperliquid_updown', label: 'Hyperliquid Up/Down', series: 'KXHYPE15M', seriesList: ['KXHYPE15M'], spot: 'HYPE-USD', asset: 'HYPE', horizon: '15m' },
-  { name: 'hyperliquid_1h_updown', label: 'Hyperliquid 1-Hour', series: 'KXHYPE', seriesList: ['KXHYPE'], spot: 'HYPE-USD', asset: 'HYPE', horizon: '1h', deep: 300 },
+  { name: 'hyperliquid_1h_updown', label: 'Hyperliquid 1-Hour', series: 'KXHYPE', seriesList: ['KXHYPE'], spot: 'HYPE-USD', asset: 'HYPE', horizon: '1h', deep: 300,
+    // BRAIN REWIRE (2026-11-11, operator order after 0/6, -$1.87, five YES
+    // losses in one day): the driftless gaussian is honest at 15m but blind at
+    // 1h+ - it priced a multi-hour HYPE slide as a 30c YES "edge" six times.
+    // These four code-level knobs are read from THIS registry entry only (the
+    // persisted state.lane_configs can not carry them; the registry is code).
+    trendGate: true,     // block entries when spot drives toward the strike
+                         // over a horizon-scaled window (the proven noBook
+                         // 2026-11-04 "losers were reversals" law, transplanted)
+    maxTauSec: 7200,     // never price rungs >2h out - a 20-tick drift model
+                         // has no business pricing 5-hour risk
+    minEdgeFloor: 0.01,  // 1c real edge minimum (lane config said 0.05c ~ none)
+    makerTtlSec: 60,     // resting bids die in 60s so a slide that starts
+                         // mid-rest cannot adversely fill a stale bid; the
+                         // re-placed bid must re-pass the trend gate
+  },
   { name: 'all_no_markets', label: 'ALL NO MARKETS', series: null, seriesList: [], spot: null, asset: null, horizon: 'no-side' },
   { name: 'certainty', label: 'CERTAINTY (near-expiry, 90%+ win rate)', series: null, seriesList: [], spot: null, asset: null, horizon: 'certainty' },
 ];
@@ -1425,8 +1440,12 @@ async function activeQuote(lane) {
       return { ...m, fair };
     });
     
-    // Filter to markets with reasonable fair value
-    const fairMarkets = marketsWithFair.filter(m => m.fair >= 0.05 && m.fair <= 0.95 && m.close_time && (new Date(m.close_time).getTime() - Date.now()) >= 60000);
+    // Filter to markets with reasonable fair value. maxTauSec (2026-11-11
+    // hyperliquid_1h rewire): a registry-level horizon ceiling so the 20-tick
+    // drift brain never prices rungs hours out - the KXHYPE hourly ladder
+    // lists 5-hour contracts and the old picker happily scored them.
+    const tauMaxMs = lane.maxTauSec ? lane.maxTauSec * 1000 : Infinity;
+    const fairMarkets = marketsWithFair.filter(m => m.fair >= 0.05 && m.fair <= 0.95 && m.close_time && (new Date(m.close_time).getTime() - Date.now()) >= 60000 && (new Date(m.close_time).getTime() - Date.now()) <= tauMaxMs);
     if (!fairMarkets.length) continue;
     
     // Pick closest to spot, but prefer markets with reasonable time to expiration
@@ -2031,9 +2050,35 @@ async function engineTick() {
     const minPrice = lc.min_price ?? state.runtime.min_price;
     if (price >= maxPrice) { ls.skips++; ls.last_skip = 'entry price ' + price + ' in blocked band'; continue; }
     if (price < minPrice) { ls.skips++; ls.last_skip = 'entry price ' + price + ' below floor'; continue; }
+
+    // TREND GATE (2026-11-11 hyperliquid_1h rewire, operator order): the proven
+    // noBook 2026-11-04 law ("winners entered while the move AWAY from the
+    // strike was continuing; losers were reversals"), transplanted to the lane
+    // path with a horizon-scaled window: at 15m the driftless gaussian is
+    // honest, at 1h+ it is blind - it priced a multi-hour HYPE slide as a YES
+    // "edge" six times (0/6). Enabled per-lane via the LANES registry
+    // (lane.trendGate) so winning lanes are untouched.
+    if (lane.trendGate) {
+      const winSec = Math.max(60, Math.min(900, Math.round(tau * 0.25))); // 25% of horizon, clamped 1-15 min
+      const pts = (s && Array.isArray(s.points)) ? s.points : [];
+      const nowT = Date.now() / 1000;
+      let ref = null;
+      for (let i = pts.length - 1; i >= 0; i--) { if (nowT - pts[i].t >= winSec) { ref = pts[i]; break; } }
+      if (ref && perSec) {
+        const mom = (s.price - ref.p) / ref.p;                 // realized drift over the window
+        const driftWin = 0.5 * perSec * Math.sqrt(winSec);     // half a window-sigma (noBook threshold law)
+        const fading = (result.side === 'YES' && mom < -driftWin) || (result.side === 'NO' && mom > driftWin);
+        if (fading) {
+          ls.skips++; ls.last_skip = 'trend_gate ' + result.side + ' blocked: ' + (mom >= 0 ? '+' : '') + (mom * 100).toFixed(2) + '%/' + winSec + 's toward strike';
+          continue;
+        }
+      }
+    }
     
-    // Lane-specific edge threshold (DRY: looser for analysis)
-    const minEdge = lc.min_edge ?? state.runtime.min_edge;
+    // Lane-specific edge threshold (DRY: looser for analysis). The registry
+    // may impose a HIGHER floor (2026-11-11 hyperliquid_1h rewire: its config
+    // floor of 0.0005 was effectively no requirement at all).
+    const minEdge = Math.max(lc.min_edge ?? state.runtime.min_edge, lane.minEdgeFloor || 0);
     if (result.edge < minEdge) { ls.skips++; ls.last_skip = 'no edge (' + result.edge.toFixed(4) + ' < ' + minEdge + ')'; continue; }
     
     // Lane-specific confidence threshold (DRY: looser for analysis)
@@ -2101,7 +2146,7 @@ async function engineTick() {
       // MAKER-EDGE: never lift the ask. Rest a bid at our own level; FILLSIM books
       // the position only if a REAL print goes through that bid inside the TTL.
       if (laneMakerPending(lane.name)) { ls.skips++; ls.last_skip = 'maker bid already resting'; continue; }
-      const ttlSec = Number(lc.maker_ttl_sec) || (lane.horizon === '15m' ? 60 : 180);
+      const ttlSec = Number(lc.maker_ttl_sec) || lane.makerTtlSec || (lane.horizon === '15m' ? 60 : 180);
       const snapQ = { ticker: q.ticker, title: q.title, series: q.series, strike: q.strike, close_time: q.close_time, source: q.source, host: q.host, yes_bid: q.yes_bid, no_bid: q.no_bid, yes_ask: q.yes_ask, no_ask: q.no_ask };
       const rid = FILLSIM.intent({ ticker: q.ticker, side, bid: price, qty: 1, ttl_ms: ttlSec * 1000, volume: q.volume, last: q.last,
         book: { lane_entry: true, lane: lane.name, side, price, fair: result.fair != null ? result.fair : price, edge: result.edge, sigma: perSec, q: snapQ } });
@@ -4100,7 +4145,34 @@ async function runCertaintyPass() {
   if (cfg.enabled !== true) { ls.skips++; ls.last_skip = 'lane disabled in config'; return; }
   const book = state.all_no[state.mode];
   if (!book) return;
-  const open = book.positions.filter(p => p.strategy === 'certainty' && p.status === 'resting');
+  // CERTAINTY SETTLEMENT SELF-PUMP + CAP RELIEF (2026-11-12): the exit pump
+  // that settles this book (runAllNoExits) is gated on the all_no LANE; with
+  // that lane off (operator order 11-11), certainty rows zombied forever -
+  // 4 corpses from expired 26NOV11 markets wedged the lane at max_concurrent
+  // for ~40h and blocked every new entry. Two fences:
+  //   1. SELF-PUMP: a resting row whose market closed >2min ago gets its real
+  //      Kalshi result booked now (NO FABRICATED ZEROES - no result, no close).
+  //   2. CAP RELIEF: rows expired >26h that still have no result stop counting
+  //      toward max_concurrent; the self-pump keeps retrying them forever.
+  const restingRows = book.positions.filter(p => p.strategy === 'certainty' && p.status === 'resting');
+  for (const p of restingRows) {
+    const exp = p.expiration ? new Date(p.expiration).getTime() : 0;
+    if (!exp || (Date.now() - exp) <= 120000) continue;
+    try {
+      const q = await quoteForTicker(p.market_id);
+      if (q && (q.result === 'yes' || q.result === 'no')) {
+        const won = q.result === (p.side === 'YES' ? 'yes' : 'no') ? 1 : 0;
+        const r = closeAllNoPosition(p.id, won, 'settled');
+        if (r && r.ok) log('certainty_settled', { market_id: p.market_id, result: q.result, pnl: r.pnl, source: 'self-pump' });
+      }
+    } catch (e) { }
+  }
+  const open = book.positions.filter(p => {
+    if (p.strategy !== 'certainty' || p.status !== 'resting') return false;
+    const exp = p.expiration ? new Date(p.expiration).getTime() : 0;
+    if (exp && (Date.now() - exp) > 26 * 3600 * 1000) return false;
+    return true;
+  });
   if (open.length >= cfg.max_concurrent) { ls.skips++; ls.last_skip = 'max concurrent positions'; return; }
   let scan;
   try { scan = await scanCertaintyCandidates(cfg); }
@@ -4219,6 +4291,34 @@ function shadowFastSettle() {
   }
 }
 setInterval(() => { try { shadowFastSettle(); } catch (e) { } }, 30000);
+
+// HARVESTER ZOMBIE SWEEP (2026-11-11): harvester positions settle ONLY via
+// the noBook scan sweep, which sees a market's result only while it still
+// appears in status=open listings. Any market that finalizes during a scan
+// gap or server restart is never seen again - 16 paper positions from Nov
+// 10-11 sat "open" forever (tape: "filled 16 settled 0", EV/contract n/a).
+// The dry book already polls its held markets directly (markDryPositions);
+// the harvester now gets the same treatment: poll each open position's
+// market, settle on the real Kalshi result. Bounded: <=16 positions, 1
+// call/min each, kalshi.js paces internally. Verdict before action: some
+// zombies will settle RED (Nov-10 daily NOs) - truth beats a fake "open".
+async function harvesterSettleSweep() {
+  if (!HARVEST || !state.harvester || !Array.isArray(state.harvester.positions)) return;
+  const tickers = Array.from(new Set(state.harvester.positions.map(p => p.market_id)));
+  for (const t of tickers) {
+    try {
+      const q = await quoteForTicker(t);
+      if (q && (q.result === 'yes' || q.result === 'no')) {
+        const resultYes = q.result === 'yes';
+        const nH = HARVEST.settleResult(t, resultYes);
+        let nS = 0;
+        try { nS = CALIB.settleResult(t, resultYes, 'kalshi'); } catch (e) { }
+        if (nH > 0 || nS > 0) log('harvester_zombie_settled', { market_id: t, positions: nH, shadows: nS, result: q.result });
+      }
+    } catch (e) { /* next sweep retries */ }
+  }
+}
+setInterval(() => { try { harvesterSettleSweep().catch(() => { }); } catch (e) { } }, 60000);
 
 async function runAllNoEngine() {
   if (!state.no_lanes_enabled) return;
